@@ -1,27 +1,362 @@
 """
 decadriver/deca_regs.py
 
-DW3000 register file IDs. Only the registers actually used by the
-examples ported so far are defined here -- add more as later examples
-are ported (cross-reference decadriver/deca_regs.h in the upstream
-project rather than guessing).
+DW3000 register file IDs and bitfield constants. Every value in this file
+was pulled directly from the real upstream source (decadriver/deca_regs.h,
+deca_device_api.h, deca_vals.h in foldedtoad/dwm3000) -- not re-derived or
+guessed -- specifically the subset needed by decadriver/deca_device.py's
+dwt_initialise()/dwt_configure()/TX path ported so far.
 
-Register addressing on the DW3000 is (register_file, offset_within_file),
-both encoded into a combined 24-bit "regFileID" value in the upstream
-driver as regFileID = (file << 16) | offset. We keep that convention
-here so the SPI-header math in deca_device.py matches the source
-project's dwt_xfer3000().
+Add more constants here (cross-referenced the same way) as later examples
+pull in more of decadriver.
 """
 
 def _reg(file_id: int, offset: int = 0) -> int:
     return (file_id << 16) | offset
 
 
-# General configuration file (file 0x00). DEV_ID is the very first
-# register: file 0, offset 0, 4 bytes. Reset value for DW3000/DW3110
-# family parts is 0xDECA0302 (byte order handled in deca_device.py).
+# ---------------------------------------------------------------------
+# DEV_ID (file 0, offset 0)
+# ---------------------------------------------------------------------
 GEN_CFG_FILE_ID = 0x00
 DEV_ID_ID = _reg(GEN_CFG_FILE_ID, 0x00)
 DEV_ID_LEN = 4
 
-EXPECTED_DEV_ID = 0xDECA0302
+DWT_C0_DEV_ID = 0xDECA0302          # DW3000 MPW C0 (non PDOA) silicon device ID
+DWT_C0_PDOA_DEV_ID = 0xDECA0312     # DW3000 MPW C0 (with PDOA) silicon device ID
+EXPECTED_DEV_ID = DWT_C0_DEV_ID     # kept for ex_00a backward compat
+
+# ---------------------------------------------------------------------
+# SPI header mode bits (deca_device_api.h spi_modes_e, deca_device.c)
+# ---------------------------------------------------------------------
+DW3000_SPI_RD_BIT = 0x0000
+DW3000_SPI_WR_BIT = 0x8000
+DW3000_SPI_AND_OR_8 = 0x8001
+DW3000_SPI_AND_OR_16 = 0x8002
+DW3000_SPI_AND_OR_32 = 0x8003
+
+DW3000_SPI_FAC = (0 << 6) | (1 << 0)    # Fast Access Command
+DW3000_SPI_FARW = (0 << 6) | (0 << 0)   # Fast Access Command w/ R/W support
+DW3000_SPI_EAMRW = (1 << 6)             # Extended Address Mode w/ R/W support
+
+SPICRC_CFG_ID = 0x18
+
+# ---------------------------------------------------------------------
+# Registers used by dwt_initialise / dwt_configure / TX path
+# ---------------------------------------------------------------------
+SYS_CFG_ID = 0x10
+SYS_CFG_PHR_MODE_BIT_MASK = 0x10
+SYS_CFG_PHR_6M8_BIT_MASK = 0x20
+SYS_CFG_PHR_6M8_BIT_OFFSET = 5
+SYS_CFG_CP_SPC_BIT_MASK = 0x3000
+SYS_CFG_CP_SPC_BIT_OFFSET = 12
+SYS_CFG_PDOA_MODE_BIT_MASK = 0x30000
+SYS_CFG_PDOA_MODE_BIT_OFFSET = 16
+SYS_CFG_CP_SDC_BIT_MASK = 0x8000
+SYS_CFG_SPI_CRC_BIT_MASK = 0x40
+SYS_CFG_FFEN_BIT_MASK = 0x1
+
+TX_ANTD_ID = 0x10004
+TX_POWER_ID = 0x1000C
+
+OTP_CFG_ID = 0xB0008
+OTP_CFG_OPS_ID_BIT_MASK = 0x1800
+OTP_CFG_OPS_KICK_BIT_MASK = 0x400
+OTP_CFG_DGC_SEL_BIT_MASK = 0x2000
+OTP_CFG_DGC_SEL_BIT_OFFSET = 13
+OTP_CFG_DGC_KICK_BIT_MASK = 0x40
+OTP_ADDR_ID = 0xB0004
+OTP_RDATA_ID = 0xB0010
+OTP_WDATA_ID = 0xB0000
+
+DWT_OPSET_LONG = (0x0 << 11)
+DWT_OPSET_SCP = (0x1 << 11)
+DWT_OPSET_SHORT = (0x2 << 11)
+
+IP_CONFIG_LO_ID = 0xE000C
+IP_CONFIG_HI_ID = 0xE000E
+STS_CONFIG_LO_ID = 0xE0012
+STS_CONFIG_HI_ID = 0xE0016
+STS_CONFIG_LO_STS_MAN_TH_BIT_MASK = 0x7F0000
+STS_CTRL_ID = 0x20004
+STS_CTRL_LOAD_IV_BIT_MASK = 0x1
+STS_CFG0_ID = 0x20000
+
+DTUNE0_ID = 0x60000
+DTUNE0_PRE_PAC_SYM_BIT_MASK = 0x3
+DTUNE3_ID = 0x6000C
+PD_THRESH_NO_DATA = 0xAF5F35CC
+PD_THRESH_DEFAULT = 0xAF5F584C
+
+CHAN_CTRL_ID = 0x10014
+CHAN_CTRL_RX_PCODE_BIT_MASK = 0x1F00
+CHAN_CTRL_RX_PCODE_BIT_OFFSET = 8
+CHAN_CTRL_TX_PCODE_BIT_MASK = 0xF8
+CHAN_CTRL_TX_PCODE_BIT_OFFSET = 3
+CHAN_CTRL_SFD_TYPE_BIT_MASK = 0x6
+CHAN_CTRL_SFD_TYPE_BIT_OFFSET = 1
+CHAN_CTRL_RF_CHAN_BIT_MASK = 0x1
+
+TX_FCTRL_ID = 0x24
+TX_FCTRL_HI_ID = 0x28
+TX_FCTRL_TXBR_BIT_MASK = 0x400
+TX_FCTRL_TXBR_BIT_OFFSET = 10
+TX_FCTRL_TXPSR_BIT_MASK = 0xF000
+TX_FCTRL_TXPSR_BIT_OFFSET = 12
+TX_FCTRL_TXB_OFFSET_BIT_MASK = 0x3FF0000
+TX_FCTRL_TXB_OFFSET_BIT_OFFSET = 16
+TX_FCTRL_TR_BIT_MASK = 0x800
+TX_FCTRL_TR_BIT_OFFSET = 11
+TX_FCTRL_TXFLEN_BIT_MASK = 0x3FF
+
+TX_CTRL_HI_ID = 0x7001C
+TX_CTRL_LO_ID = 0x70018
+PLL_CFG_ID = 0x90000
+PLL_CAL_ID = 0x90008
+RX_CTRL_HI_ID = 0x70010
+LDO_RLOAD_ID = 0x70050
+XTAL_ID = 0x90014
+
+SYS_STATUS_ID = 0x44
+SYS_STATUS_CP_LOCK_BIT_MASK = 0x00000002
+SYS_STATUS_TXFRS_BIT_MASK = 0x00000080
+SYS_STATUS_RCINIT_BIT_MASK = 0x01000000
+SYS_STATUS_IRQS_BIT_MASK = 0x00000001
+SYS_STATUS_HPDWARN_BIT_MASK = 0x08000000
+
+SYS_STATE_LO_ID = 0xF0030
+DW_SYS_STATE_TXERR = 0xD0000
+
+DGC_CFG_ID = 0x30018
+DGC_CFG_THR_64_BIT_MASK = 0x7E00
+DGC_CFG_THR_64_BIT_OFFSET = 9
+DGC_CFG_RX_TUNE_EN_BIT_MASK = 0x1
+DGC_LUT_0_CFG_ID = 0x30038
+DGC_LUT_1_CFG_ID = 0x3003C
+DGC_LUT_2_CFG_ID = 0x30040
+DGC_LUT_3_CFG_ID = 0x30044
+DGC_LUT_4_CFG_ID = 0x30048
+DGC_LUT_5_CFG_ID = 0x3004C
+DGC_LUT_6_CFG_ID = 0x30050
+DGC_CFG0_ID = 0x3001C
+DGC_CFG1_ID = 0x30020
+
+LDO_CTRL_ID = 0x70048
+LDO_CTRL_LDO_VDDIF2_EN_BIT_MASK = 0x100
+LDO_CTRL_LDO_VDDMS3_EN_BIT_MASK = 0x4
+LDO_CTRL_LDO_VDDMS1_EN_BIT_MASK = 0x1
+LDO_CTRL_LDO_VDDPLL_EN_BIT_MASK = 0x10
+
+RX_CAL_CFG_ID = 0x4000C
+RX_CAL_CFG_COMP_DLY_BIT_OFFSET = 16
+RX_CAL_CFG_CAL_MODE_BIT_MASK = 0x3
+RX_CAL_CFG_CAL_EN_BIT_MASK = 0x10
+RX_CAL_STS_ID = 0x40020
+RX_CAL_RESI_ID = 0x40014
+RX_CAL_RESQ_ID = 0x4001C
+ERR_RX_CAL_FAIL = 0x1FFFFFFF
+
+CIA_CONF_ID = 0xE0000
+
+SEQ_CTRL_ID = 0x110008
+SEQ_CTRL_AINIT2IDLE_BIT_MASK = 0x100
+SEQ_CTRL_FORCE2INIT_BIT_MASK = 0x800000
+CLK_CTRL_ID = 0x110004
+CLK_CTRL_TX_BUF_CLK_ON_BIT_MASK = 0x1000
+CLK_CTRL_RX_BUF_CLK_ON_BIT_MASK = 0x800
+CLK_CTRL_SYS_CLK_SEL_BIT_OFFSET = 0
+CLK_CTRL_TX_CLK_SEL_BIT_OFFSET = 4
+CLK_CTRL_GPIO_CLK_EN_BIT_MASK = 0x10000
+CLK_CTRL_GPIO_DCLK_EN_BIT_MASK = 0x40000
+CLK_CTRL_LP_CLK_EN_BIT_MASK = 0x800000
+DWT_AUTO_CLKS = (0x200 | 0x200000 | 0x100000)
+
+GPIO_MODE_ID = 0x50000
+GPIO_MODE_MSGP2_MODE_BIT_MASK = 0x1C0
+GPIO_MODE_MSGP3_MODE_BIT_MASK = 0xE00
+GPIO_PIN2_RXLED = (1 << 6)
+GPIO_PIN3_TXLED = (1 << 9)
+LED_CTRL_ID = 0x110016
+LED_CTRL_BLINK_EN_BIT_MASK = 0x100
+LED_CTRL_FORCE_TRIGGER_BIT_MASK = 0xF0000
+DWT_LEDS_BLINK_TIME_DEF = 0x10
+DWT_LEDS_ENABLE = 0x01
+DWT_LEDS_INIT_BLINK = 0x02
+
+BIAS_CTRL_ID = 0x11001F
+BIAS_CTRL_BIAS_MASK = 0x1F
+LDO_BIAS_KICK = 0x180
+
+INDIRECT_ADDR_A_ID = 0x1F0004
+ADDR_OFFSET_A_ID = 0x1F0008
+INDIRECT_ADDR_B_ID = 0x1F000C
+ADDR_OFFSET_B_ID = 0x1F0010
+TX_BUFFER_ID = 0x140000
+TX_BUFFER_MAX_LEN = 1024
+REG_DIRECT_OFFSET_MAX_LEN = 127
+INDIRECT_POINTER_A_ID = 0x1D0000
+
+SAR_CTRL_ID = 0x80000
+FCS_LEN = 2
+STD_FRAME_LEN = 127
+EXT_FRAME_LEN = 1023
+DWT_TX_BUFF_OFFSET_ADJUST = 128
+
+RF_TXCTRL_CH5 = 0x1C071134
+RF_TXCTRL_CH9 = 0x1C010034
+RF_TXCTRL_LO_B2 = 0x0E
+RF_RXCTRL_CH9 = 0x08B5A833
+RF_PLL_CFG_CH5 = 0x1F3C
+RF_PLL_CFG_CH9 = 0x0F3C
+RF_PLL_CFG_LD = 0x81
+LDO_RLOAD_VAL_B1 = 0x14
+
+DWT_DGC_CFG = 0x32
+DWT_DGC_CFG0 = 0x10000240
+DWT_DGC_CFG1 = 0x1B6DA489
+
+# DGC RX LUT values (Automatic Gain Control lookup tables) -- one set per channel
+CH5_DGC_LUT_0 = 0x1C0FD
+CH5_DGC_LUT_1 = 0x1C43E
+CH5_DGC_LUT_2 = 0x1C6BE
+CH5_DGC_LUT_3 = 0x1C77E
+CH5_DGC_LUT_4 = 0x1C7BE
+CH5_DGC_LUT_5 = 0x1C7FE
+CH5_DGC_LUT_6 = 0x1C7FE
+CH9_DGC_LUT_0 = 0x2A8FE
+CH9_DGC_LUT_1 = 0x2AC36
+CH9_DGC_LUT_2 = 0x2A5FE
+CH9_DGC_LUT_3 = 0x2AF3E
+CH9_DGC_LUT_4 = 0x2AF7D
+CH9_DGC_LUT_5 = 0x2AFB5
+CH9_DGC_LUT_6 = 0x2AFB5
+
+# ---------------------------------------------------------------------
+# OTP addresses (deca_device.c local #defines)
+# ---------------------------------------------------------------------
+LDOTUNELO_ADDRESS = 0x04
+LDOTUNEHI_ADDRESS = 0x05
+PARTID_ADDRESS = 0x06
+LOTID_ADDRESS = 0x07
+VBAT_ADDRESS = 0x08
+VTEMP_ADDRESS = 0x09
+BIAS_TUNE_ADDRESS = 0x0A
+DGC_TUNE_ADDRESS = 0x20
+XTRIM_ADDRESS = 0x1E
+OTPREV_ADDRESS = 0x1F
+
+CIA_MANUALLOWERBOUND_TH_64 = 0x10
+STSQUAL_THRESH_64 = 0.90
+
+# ---------------------------------------------------------------------
+# dwt_config_t field enums (deca_device_api.h)
+# ---------------------------------------------------------------------
+DWT_PLEN_4096 = 0x03
+DWT_PLEN_2048 = 0x0A
+DWT_PLEN_1536 = 0x06
+DWT_PLEN_1024 = 0x02
+DWT_PLEN_512 = 0x0D
+DWT_PLEN_256 = 0x09
+DWT_PLEN_128 = 0x05
+DWT_PLEN_64 = 0x01
+DWT_PLEN_32 = 0x04
+DWT_PLEN_72 = 0x07
+
+DWT_PAC8 = 0
+DWT_PAC4 = 3
+
+DWT_SFD_DW_8 = 1
+
+DWT_BR_850K = 0
+DWT_BR_6M8 = 1
+
+DWT_PHRMODE_STD = 0x0
+DWT_PHRMODE_EXT = 0x1
+DWT_PHRRATE_STD = 0x0
+DWT_PHRRATE_DTA = 0x1
+
+DWT_SFDTOC_DEF = 129
+
+DWT_STS_MODE_OFF = 0x0
+DWT_STS_MODE_1 = 0x1
+DWT_STS_MODE_2 = 0x2
+DWT_STS_MODE_ND = 0x3
+DWT_STS_MODE_SDC = 0x8
+DWT_STS_CONFIG_MASK = 0xB
+DWT_STS_LEN_64 = 1
+
+DWT_PDOA_M0 = 0x0
+DWT_PDOA_M1 = 0x1
+DWT_PDOA_M3 = 0x3
+
+
+def GET_STS_REG_SET_VALUE(x: int) -> int:
+    return 1 << (x + 2)
+
+
+DWT_ALT_OPS = 0x0020
+DWT_SEL_OPS0 = 0x0000
+DWT_SEL_OPS1 = 0x0040
+DWT_SEL_OPS2 = 0x0080
+DWT_SEL_OPS3 = 0x00C0
+
+DWT_DGC_LOAD_FROM_SW = 0
+DWT_DGC_LOAD_FROM_OTP = 1
+DWT_DGC_SEL_CH5 = 0
+DWT_DGC_SEL_CH9 = 1
+
+DWT_RUNSAR = 0x0002
+DBL_BUFF_OFF = 0x0
+
+DWT_READ_OTP_PID = 0x10
+DWT_READ_OTP_LID = 0x20
+DWT_READ_OTP_BAT = 0x40
+DWT_READ_OTP_TMP = 0x80
+
+DWT_DW_INIT = 0x0
+DWT_DW_IDLE = 0x1
+DWT_DW_IDLE_RC = 0x2
+
+DWT_SUCCESS = 0
+DWT_ERROR = -1
+
+# ---------------------------------------------------------------------
+# TX start / fast commands
+# ---------------------------------------------------------------------
+DWT_START_TX_IMMEDIATE = 0x00
+DWT_START_TX_DELAYED = 0x01
+DWT_START_TX_DLY_REF = 0x04
+DWT_START_TX_DLY_RS = 0x08
+DWT_START_TX_DLY_TS = 0x10
+DWT_START_TX_CCA = 0x20
+DWT_RESPONSE_EXPECTED = 0x02
+
+CMD_TXRXOFF = 0x0
+CMD_TX = 0x1
+CMD_RX = 0x2
+CMD_DTX = 0x3
+CMD_DRX = 0x4
+CMD_DTX_TS = 0x5
+CMD_DRX_TS = 0x6
+CMD_DTX_RS = 0x7
+CMD_DRX_RS = 0x8
+CMD_DTX_REF = 0x9
+CMD_DRX_REF = 0xA
+CMD_CCA_TX = 0xB
+CMD_TX_W4R = 0xC
+CMD_DTX_W4R = 0xD
+CMD_DTX_TS_W4R = 0xE
+CMD_DTX_RS_W4R = 0xF
+CMD_DTX_REF_W4R = 0x10
+CMD_CCA_TX_W4R = 0x11
+CMD_DB_TOGGLE = 0x13
+
+MAX_RETRIES_FOR_PLL = 6
+MAX_RETRIES_FOR_PGF = 3
+DELAY_20uUSec = 20
+
+SQRT_FACTOR = 181
+SQRT_SHIFT_VAL = 7
+SHIFT_VALUE = 11
+MOD_VALUE = 2048
+HALF_MOD = MOD_VALUE >> 1
