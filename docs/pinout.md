@@ -25,7 +25,7 @@ line from the DW3000 to a host GPIO.
 | SPI MOSI | GP19 | D11 | RP2040 hardware `SPI0` default |
 | SPI MISO | GP16 | D12 | RP2040 hardware `SPI0` default |
 | SPI CS (DW3000 chip select) | GP17 | D10 | Driven manually in software, not by hw SPI auto-CS |
-| RSTn (DW3000 reset, open-drain) | GP20 | D7 | **Verify** — varies by shield revision |
+| RSTn (DW3000 reset, open-drain) | GP7 | D7 | Confirmed on hardware. (GP20 is the ArduPico's own RP2040 reset line — do not use it for the DW3000.) |
 | IRQ (DW3000 → host) | GP21 | D2 | **Verify** — must be a Pico GPIO, any pin works (no INT0 restriction on RP2040) |
 | WAKEUP | GP22 | D8 | **Verify** — only needed once sleep modes are ported |
 

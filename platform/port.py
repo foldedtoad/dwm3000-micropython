@@ -27,7 +27,9 @@ PINS = {
     "miso":     16,
     "cs":       17,     # driven manually (not by hw auto-CS) so decadriver
                          # can hold CS across multi-byte header+body transfers
-    "rst":      20,     # DW3000 RSTn -- open-drain, active low
+    "rst":      7,      # DW3000 RSTn -- open-drain, active low
+                         # (was wrongly set to 20 -- GP20 is the ArduPico's
+                         # RP2040 reset line, not the DW3000's, confirmed by user)
     "irq":      21,     # DW3000 IRQ -> host
     "wakeup":   22,     # DW3000 WAKEUP -- optional, only needed for sleep modes
 }
