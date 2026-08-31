@@ -210,6 +210,25 @@ def dwt_check_dev_id() -> int:
 
 
 # ===========================================================================
+# Part ID / Lot ID -- factory-unique, OTP (fuse) backed
+# ===========================================================================
+def dwt_getpartid() -> int:
+    """
+    Factory-unique 32-bit Part ID, read from OTP (fuses). This is the
+    real "which physical chip is this" identifier on the DW3000 -- unlike
+    the EUI_64 register, which is plain writable RAM-style storage that
+    reads back all-zero until firmware writes it, Part ID/Lot ID are
+    burned in at manufacture and differ between every module.
+    """
+    return _dwt_otpread(R.PARTID_ADDRESS)
+
+
+def dwt_getlotid() -> int:
+    """Factory-unique Lot ID, read from OTP. See dwt_getpartid()."""
+    return _dwt_otpread(R.LOTID_ADDRESS)
+
+
+# ===========================================================================
 # OTP
 # ===========================================================================
 def _dwt_otpread(address: int) -> int:

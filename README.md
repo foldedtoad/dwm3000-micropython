@@ -17,7 +17,8 @@ upstream C project as porting continues.
 | `decadriver/` (register-level DW3000 driver) | `dwt_xfer3000` (all 3 SPI header modes), offset-register read/write/modify, OTP read, `dwt_initialise`, `dwt_configure` (non-SCP path), `dwt_configuretxrf`, TX path (`dwt_writetxdata`/`dwt_writetxfctrl`/`dwt_starttx`), `dwt_setleds`. RX path and ranging **not yet ported**. |
 | `shared_data/` | Placeholder — not needed until ranging examples (`ex_05*`, `ex_06*`) are ported |
 | `examples/ex_00a_reading_dev_id` | **Working, verified on hardware** — reads back `0xdeca0302` |
-| `examples/ex_01a_simple_tx` | **Ported, passes control-flow + SPI-header unit tests. Not yet run on hardware.** |
+| `examples/ex_01a_simple_tx` | **Working, verified on hardware** — frames going out every 500ms, clean status polling, graceful Ctrl-C handling. |
+| `examples/util_read_chip_id` | **Ported, needs a hardware run.** Reads the DW3000's factory-unique Part ID / Lot ID from OTP. Not an upstream-numbered example (foldedtoad/dwm3000 doesn't have one); added as a small standalone utility. (An earlier EUI_64-based version of this utility was scrapped -- EUI_64 is a plain register, not OTP-backed, so it isn't actually factory-unique.) |
 | `examples/ex_02a_simple_rx` and beyond | Not started |
 
 The original `decadriver/deca_device.c` is ~5,000 lines of register-level
