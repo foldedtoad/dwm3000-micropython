@@ -18,7 +18,19 @@ from machine import Pin, SPI
 import utime as time
 
 # ---------------------------------------------------------------------------
-# Pin assignment -- edit this dict to match your ArduPico + DWS3000 wiring.
+# Board selection. The ArduPico and Flexypin carriers are near-clones; the
+# only difference found so far is which Pico GPIO drives the DW3000's RSTn.
+# (On the ArduPico, GP20 is the RP2040's own reset line -- not the DW3000's.)
+# ---------------------------------------------------------------------------
+BOARD = "flexypin"          # "ardupico" or "flexypin"
+
+_RST_GPIO_BY_BOARD = {
+    "ardupico": 7,
+    "flexypin": 9,
+}
+
+# ---------------------------------------------------------------------------
+# Pin assignment -- edit this dict if your wiring differs.
 # ---------------------------------------------------------------------------
 PINS = {
     "spi_id":   0,      # RP2040 hardware SPI peripheral (SPI0)
@@ -27,9 +39,7 @@ PINS = {
     "miso":     16,
     "cs":       17,     # driven manually (not by hw auto-CS) so decadriver
                          # can hold CS across multi-byte header+body transfers
-    "rst":      7,      # DW3000 RSTn -- open-drain, active low
-                         # (was wrongly set to 20 -- GP20 is the ArduPico's
-                         # RP2040 reset line, not the DW3000's, confirmed by user)
+    "rst":      _RST_GPIO_BY_BOARD[BOARD],  # DW3000 RSTn -- open-drain, active low
     "irq":      21,     # DW3000 IRQ -> host
     "wakeup":   22,     # DW3000 WAKEUP -- optional, only needed for sleep modes
 }

@@ -2,24 +2,27 @@
 
 A MicroPython port of [foldedtoad/dwm3000](https://github.com/foldedtoad/dwm3000)
 (Qorvo/Decawave DW3000 on the DWS3000 Arduino shield), targeting a
-**Raspberry Pi Pico (RP2040) on an ArduPico Arduino-shield carrier**.
+**Raspberry Pi Pico (RP2040) on an ArduPico or Flexypin Arduino-shield carrier**.
 
-This is a from-scratch re-implementation, not a transliteration of the
-original GPL-3.0 C sources. It mirrors the original project's module
-boundaries so that logic and fixes can be cross-referenced against the
-upstream C project as porting continues.
+This is a MicroPython port of the upstream C project and mirrors its module
+boundaries (`decadriver/`, `platform/`, `shared_data/`, `examples/`) so logic
+and fixes can be cross-referenced against upstream. `platform/` is new code
+for the RP2040. `decadriver/` is a line-by-line transliteration of the
+upstream `deca_device.c` and its headers, so it is a derivative work (see
+**License and attribution** below).
 
-## Status (2026-08-20)
+## Status (2026-10-19)
 
 | Layer | State |
 |---|---|
 | `platform/` (GPIO, reset, SPI open) | Implemented for RP2040. Pin mapping **confirmed on real ArduPico hardware** (dev-ID read succeeds). |
-| `decadriver/` (register-level DW3000 driver) | `dwt_xfer3000` (all 3 SPI header modes), offset-register read/write/modify, OTP read, `dwt_initialise`, `dwt_configure` (non-SCP path), `dwt_configuretxrf`, TX path (`dwt_writetxdata`/`dwt_writetxfctrl`/`dwt_starttx`), `dwt_setleds`. RX path and ranging **not yet ported**. |
-| `shared_data/` | Placeholder — not needed until ranging examples (`ex_05*`, `ex_06*`) are ported |
+| `decadriver/` (register-level DW3000 driver) | `dwt_xfer3000` (all 3 SPI header modes), offset-register read/write/modify, OTP read, `dwt_initialise`, `dwt_configure` (non-SCP path), `dwt_configuretxrf`, TX path (`dwt_writetxdata`/`dwt_writetxfctrl`/`dwt_starttx`), `dwt_setleds`. RX path: `dwt_rxenable` (immediate + delayed) and `dwt_readrxdata`. Ranging, timestamps, STS/PDOA/AES **not yet ported**. |
+| `shared_data/` | `FRAME_LEN_MAX` only so far; ranging structures to be added with `ex_05*`/`ex_06*` |
 | `examples/ex_00a_reading_dev_id` | **Working, verified on hardware** — reads back `0xdeca0302` |
 | `examples/ex_01a_simple_tx` | **Working, verified on hardware** — frames going out every 500ms, clean status polling, graceful Ctrl-C handling. |
 | `examples/util_read_chip_id` | **Ported, needs a hardware run.** Reads the DW3000's factory-unique Part ID / Lot ID from OTP. Not an upstream-numbered example (foldedtoad/dwm3000 doesn't have one); added as a small standalone utility. (An earlier EUI_64-based version of this utility was scrapped -- EUI_64 is a plain register, not OTP-backed, so it isn't actually factory-unique.) |
-| `examples/ex_02a_simple_rx` and beyond | Not started |
+| `examples/ex_02a_simple_rx` | **Ported, passes end-to-end + SPI-level unit tests. Not yet run on hardware.** Receives frames in polled mode; pair with `ex_01a_simple_tx` on the second board. |
+| Remaining examples (`ex_02c`+, `ex_03*`, ranging, ...) | Not started |
 
 The original `decadriver/deca_device.c` is ~5,000 lines of register-level
 init/config/TX/RX/ranging logic. Every function used by `ex_00a` and
@@ -92,17 +95,34 @@ trusting it with real hardware.
 
 ## Next steps (in order)
 
-1. ~~Confirm pin mapping~~ — **done**, `platform/port.py` matches real
-   hardware (RST is GP7, confirmed by hardware test; GP20 is the
-   ArduPico's own RP2040 reset line, not the DW3000's).
-2. ~~Run `ex_00a_reading_dev_id`~~ — **done**, reads back `0xdeca0302`.
-3. **Run `examples/ex_01a_simple_tx/main.py` on hardware** — this is the
-   next thing to do. It should print `Sending started` and then log each
-   outgoing blink frame every 500ms. If you have a second DW3000 board
-   (or a sniffer), confirm frames are actually going out over the air —
-   the code can look successful (status register shows TXFRS) while
-   still having an RF-level problem the status register can't see.
-4. Port `ex_02a_simple_rx` — requires the RX path
-   (`dwt_rxenable`, `dwt_readrxdata`, status-register polling/IRQ).
-5. Ranging examples (`ex_05*`/`ex_06*`) pull in `shared_data` and
-   timestamp/antenna-delay handling.
+1. ~~Confirm pin mapping~~ — **done.** `platform/port.py` has a `BOARD`
+   selector: `"ardupico"` (RSTn on GP7) or `"flexypin"` (RSTn on GP9);
+   everything else is identical between the two carriers. On the ArduPico,
+   GP20 is the RP2040's own reset line, not the DW3000's.
+2. ~~`ex_00a_reading_dev_id`~~ — **done**, reads back `0xdeca0302`.
+3. ~~`ex_01a_simple_tx`~~ — **done**, verified on hardware.
+4. **Run `ex_02a_simple_rx` on one board while `ex_01a_simple_tx` runs on
+   the other.** Expect `len 10: b'\xc5\x..DECAWAVE'` lines on the receiver,
+   with the sequence byte incrementing. Both boards must use the same
+   channel/preamble/PRF settings (the two examples' configs already match).
+5. Further examples (`ex_02c_rx_diagnostics`, `ex_03*` TX-wait-response,
+   ranging `ex_05*`/`ex_06*`) — each pulls in more of `decadriver`
+   (timestamps, antenna delay, diagnostics) and `shared_data`.
+
+## License and attribution
+
+This project is a derivative work of
+[foldedtoad/dwm3000](https://github.com/foldedtoad/dwm3000), which is
+licensed under the **GNU General Public License v3.0**; this port is
+distributed under the same license (see `LICENSE`).
+
+The `decadriver/` code is ported from the Decawave/Qorvo DW3000 driver and
+retains the original copyright notices:
+
+- Copyright 2013-2020 (c) Decawave Ltd, Dublin, Ireland.
+- Copyright 2016 (c) DecaWave Ltd; 2019 (c) Frederic Mes, RTLOC (platform layer).
+- Copyright 2021 (c) Callender-Consulting, LLC (Zephyr port).
+
+Register addresses, bit masks and control flow in `decadriver/` were taken
+from the upstream sources; the MicroPython code, RP2040 `platform/` layer
+and tests are new.

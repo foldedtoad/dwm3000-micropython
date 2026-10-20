@@ -717,3 +717,60 @@ def dwt_setrxantennadelay(rxDelay: int):
 
 def dwt_settxantennadelay(txDelay: int):
     dwt_write16bitoffsetreg(R.TX_ANTD_ID, 0, txDelay)
+
+
+# ===========================================================================
+# RX path
+# ===========================================================================
+def dwt_readrxdata(length: int, rxBufferOffset: int = 0) -> bytes:
+    """
+    Read `length` bytes from the RX buffer starting at `rxBufferOffset`.
+    Returns the bytes (the C version fills a caller-supplied buffer).
+    Returns b"" if the requested range exceeds the RX buffer, mirroring the
+    upstream range check (which silently does nothing in that case).
+    """
+    if local.dblbuffon == R.DBL_BUFF_ACCESS_BUFFER_1:
+        rx_buff_addr = R.RX_BUFFER_1_ID
+    else:  # RX_BUFFER_0 -- also used in non-double-buffer mode
+        rx_buff_addr = R.RX_BUFFER_0_ID
+
+    if (rxBufferOffset + length) > R.RX_BUFFER_MAX_LEN:
+        return b""
+
+    if rxBufferOffset <= R.REG_DIRECT_OFFSET_MAX_LEN:
+        return dwt_readfromdevice(rx_buff_addr, rxBufferOffset, length)
+
+    # Indirect access for offsets beyond the direct-access window
+    dwt_write32bitreg(R.INDIRECT_ADDR_A_ID, (rx_buff_addr >> 16))
+    dwt_write32bitreg(R.ADDR_OFFSET_A_ID, rxBufferOffset)
+    return dwt_readfromdevice(R.INDIRECT_POINTER_A_ID, 0, length)
+
+
+def dwt_rxenable(mode: int) -> int:
+    """Turn the receiver on, immediately or delayed. Returns DWT_SUCCESS/DWT_ERROR."""
+    if mode == R.DWT_START_RX_IMMEDIATE:
+        dwt_writefastCMD(R.CMD_RX)
+        return R.DWT_SUCCESS
+
+    # delayed RX
+    sel = mode & ~R.DWT_IDLE_ON_DLY_ERR
+    if sel == R.DWT_START_RX_DELAYED:
+        dwt_writefastCMD(R.CMD_DRX)
+    elif sel == R.DWT_START_RX_DLY_REF:
+        dwt_writefastCMD(R.CMD_DRX_REF)
+    elif sel == R.DWT_START_RX_DLY_RS:
+        dwt_writefastCMD(R.CMD_DRX_RS)
+    elif sel == R.DWT_START_RX_DLY_TS:
+        dwt_writefastCMD(R.CMD_DRX_TS)
+    else:
+        return R.DWT_ERROR
+
+    temp1 = dwt_read8bitoffsetreg(R.SYS_STATUS_ID, 3)  # 4th byte of the 5-byte status reg
+    if (temp1 & ((R.SYS_STATUS_HPDWARN_BIT_MASK >> 24) & 0xFF)) != 0:
+        # delay already passed: turn off, and unless told not to, RX immediately
+        dwt_writefastCMD(R.CMD_TXRXOFF)
+        if (mode & R.DWT_IDLE_ON_DLY_ERR) == 0:
+            dwt_writefastCMD(R.CMD_RX)
+        return R.DWT_ERROR
+
+    return R.DWT_SUCCESS
