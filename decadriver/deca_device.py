@@ -774,3 +774,30 @@ def dwt_rxenable(mode: int) -> int:
         return R.DWT_ERROR
 
     return R.DWT_SUCCESS
+
+
+# ===========================================================================
+# RX-after-TX delay and RX timeout (used by TX-then-wait-for-response)
+# ===========================================================================
+def dwt_setrxaftertxdelay(rxDelayTime: int):
+    """
+    Delay, in UWB microseconds (20 bits), from the end of a transmission to
+    turning the receiver on. Applies to TX started with DWT_RESPONSE_EXPECTED.
+    """
+    val = dwt_read32bitreg(R.ACK_RESP_ID)
+    val &= ~R.ACK_RESP_W4R_TIM_BIT_MASK
+    val |= (rxDelayTime & R.ACK_RESP_W4R_TIM_BIT_MASK)
+    dwt_write32bitoffsetreg(R.ACK_RESP_ID, 0, val)
+
+
+def dwt_setrxtimeout(time_uus: int):
+    """
+    Enable the RX frame-wait timeout (SYS_STATUS RXFTO event). `time_uus` is
+    how long the receiver stays on after RX enable, in units of 1.0256 us
+    (512/499.2 MHz). 0 disables the timeout.
+    """
+    if time_uus > 0:
+        dwt_write32bitoffsetreg(R.RX_FWTO_ID, 0, time_uus)
+        dwt_or16bitoffsetreg(R.SYS_CFG_ID, 0, R.SYS_CFG_RXWTOE_BIT_MASK)
+    else:
+        dwt_and16bitoffsetreg(R.SYS_CFG_ID, 0, (~R.SYS_CFG_RXWTOE_BIT_MASK) & 0xFFFF)

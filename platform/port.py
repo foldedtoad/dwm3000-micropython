@@ -21,12 +21,29 @@ import utime as time
 # Board selection. The ArduPico and Flexypin carriers are near-clones; the
 # only difference found so far is which Pico GPIO drives the DW3000's RSTn.
 # (On the ArduPico, GP20 is the RP2040's own reset line -- not the DW3000's.)
+#
+# DWS3000 shield signals (from upstream boards/shields/qorvo_dwm3000):
+#   RESET = Arduino D7, IRQ = D8, WAKEUP = D9.
+# Flexypin (verified from its KiCad schematic): D7 = GP9, D8 = GP2, D9 = GP3.
+# ArduPico: only RESET (GP7) is known. IRQ/WAKEUP are None until someone
+# checks that board's schematic -- anything needing them raises, rather than
+# silently driving some unrelated GPIO.
 # ---------------------------------------------------------------------------
 BOARD = "flexypin"          # "ardupico" or "flexypin"
 
 _RST_GPIO_BY_BOARD = {
     "ardupico": 7,
     "flexypin": 9,
+}
+
+_IRQ_GPIO_BY_BOARD = {
+    "ardupico": None,       # unverified -- fill in from the ArduPico schematic (D8)
+    "flexypin": 2,          # D8
+}
+
+_WAKEUP_GPIO_BY_BOARD = {
+    "ardupico": None,       # unverified -- fill in from the ArduPico schematic (D9)
+    "flexypin": 3,          # D9
 }
 
 # ---------------------------------------------------------------------------
@@ -40,8 +57,8 @@ PINS = {
     "cs":       17,     # driven manually (not by hw auto-CS) so decadriver
                          # can hold CS across multi-byte header+body transfers
     "rst":      _RST_GPIO_BY_BOARD[BOARD],  # DW3000 RSTn -- open-drain, active low
-    "irq":      21,     # DW3000 IRQ -> host
-    "wakeup":   22,     # DW3000 WAKEUP -- optional, only needed for sleep modes
+    "irq":      _IRQ_GPIO_BY_BOARD[BOARD],        # DW3000 IRQ -> host (None = unknown)
+    "wakeup":   _WAKEUP_GPIO_BY_BOARD[BOARD],     # DW3000 WAKEUP (None = unknown)
 }
 
 # SPI clock speeds. The DW3000 requires a slow SPI clock (<3 MHz) until
@@ -83,10 +100,11 @@ class Port:
         self.rst = Pin(self._rst_pin_no, Pin.IN)  # released by default
 
         # --- IRQ from DW3000 ---
-        self.irq = Pin(self.pins["irq"], Pin.IN)
+        self.irq = Pin(self.pins["irq"], Pin.IN) if self.pins["irq"] is not None else None
 
         # --- WAKEUP line to DW3000 ---
-        self.wakeup = Pin(self.pins["wakeup"], Pin.OUT, value=0)
+        self.wakeup = (Pin(self.pins["wakeup"], Pin.OUT, value=0)
+                       if self.pins["wakeup"] is not None else None)
 
     # -----------------------------------------------------------------
     # SPI speed control -- decadriver calls this after dwt_initialise()
@@ -113,6 +131,8 @@ class Port:
 
     def wakeup_pulse(self):
         """Pulse WAKEUP to bring the DW3000 out of low-power sleep."""
+        if self.wakeup is None:
+            raise RuntimeError("WAKEUP pin not defined for board %r (see port.py)" % BOARD)
         self.wakeup.value(1)
         time.sleep_us(500)
         self.wakeup.value(0)

@@ -400,3 +400,16 @@ DWT_IDLE_ON_DLY_ERR = 0x02
 DWT_START_RX_DLY_REF = 0x04
 DWT_START_RX_DLY_RS = 0x08
 DWT_START_RX_DLY_TS = 0x10
+
+
+# ---------------------------------------------------------------------
+# TX-then-wait-for-response (ex_03a) -- verified against deca_regs.h / deca_vals.h
+# ---------------------------------------------------------------------
+ACK_RESP_ID = 0x10008
+ACK_RESP_W4R_TIM_BIT_MASK = 0xFFFFF
+RX_FWTO_ID = 0x34
+SYS_CFG_RXWTOE_BIT_MASK = 0x200
+SYS_STATUS_RXFTO_BIT_MASK = 0x00020000
+
+# deca_vals.h: RX timeout events (frame-wait timeout | preamble-detect timeout)
+SYS_STATUS_ALL_RX_TO = SYS_STATUS_RXFTO_BIT_MASK | SYS_STATUS_RXPTO_BIT_MASK

@@ -1,49 +1,49 @@
-# Pinout: RP2040 (ArduPico) ↔ DWS3000 shield
+# Pinout: RP2040 carrier boards ↔ DWS3000 shield
 
-The DWS3000 is an Arduino-form-factor shield. On the original Nordic
-targets, `platform/port.c` configures these signals (from the upstream
-project's boot log):
+The DWS3000 is an Arduino-form-factor shield. Per upstream's shield
+definition (`boards/shields/qorvo_dwm3000`), it uses:
 
-```
-Configure WAKEUP pin
-Configure RESET pin
-Configure RX LED pin
-Configure TX LED pin
-Configure SPI Phase pin      (D-pin, sets DW3000 SPI CPHA via a GPIO strap)
-Configure SPI Polarity pin   (D-pin, sets DW3000 SPI CPOL via a GPIO strap)
-SPI bus open (hardware SPI)
-```
+| Signal | Arduino pin | Direction |
+|---|---|---|
+| SPI SCK / MISO / MOSI / CS | D13 / D12 / D11 / D10 | host ↔ DW3000 |
+| RSTn (open-drain, active low) | D7 | host → DW3000 |
+| IRQ | D8 | DW3000 → host |
+| WAKEUP | D9 | host → DW3000 |
 
-Plus the standard Arduino SPI header lines (MOSI/MISO/SCK/CS) and an IRQ
-line from the DW3000 to a host GPIO.
+## Per-board GPIO mapping (`platform/port.py`, set with `BOARD`)
 
-## Default RP2040 GPIO assignment used in `platform/port.py`
+| Signal | Flexypin | ArduPico |
+|---|---|---|
+| SCK (D13) | GP18 | GP18 |
+| MISO (D12) | GP16 | GP16 |
+| MOSI (D11) | GP19 | GP19 |
+| CS (D10), driven in software | GP17 | GP17 |
+| RSTn (D7) | **GP9** | **GP7** |
+| IRQ (D8) | **GP2** | *unverified — not yet checked* |
+| WAKEUP (D9) | **GP3** | *unverified — not yet checked* |
 
-| Signal | RP2040 GPIO | Arduino header pin (typical) | Notes |
-|---|---|---|---|
-| SPI SCK | GP18 | D13 | RP2040 hardware `SPI0` default |
-| SPI MOSI | GP19 | D11 | RP2040 hardware `SPI0` default |
-| SPI MISO | GP16 | D12 | RP2040 hardware `SPI0` default |
-| SPI CS (DW3000 chip select) | GP17 | D10 | Driven manually in software, not by hw SPI auto-CS |
-| RSTn (DW3000 reset, open-drain) | GP7 | D7 | Confirmed on hardware. (GP20 is the ArduPico's own RP2040 reset line — do not use it for the DW3000.) |
-| IRQ (DW3000 → host) | GP21 | D2 | **Verify** — must be a Pico GPIO, any pin works (no INT0 restriction on RP2040) |
-| WAKEUP | GP22 | D8 | **Verify** — only needed once sleep modes are ported |
+**How each was established:**
 
-**These GPIO numbers assume your ArduPico wires Arduino D10-D13 straight
-through to RP2040 GP16-GP19 (the Pico's native SPI0 pins), which is common
-but not guaranteed.** Cross-check against your ArduPico's own pinout
-diagram before wiring/trusting this. If your carrier maps the Arduino SPI
-header to a different GPIO set (e.g. `SPI1` on GP10-GP15), update
-`platform/port.py`'s `PINS` dict accordingly — nothing else needs to
-change, since the rest of the driver only talks to that dict.
+- *Flexypin:* every entry is read from the board's KiCad schematic/PCB
+  (`solderparty/flexypin_adapters_hw`, `rpi_pico_uno_flexypin`): header pads
+  D13/D12/D11/D10 → GP18/16/19/17, D7 → GP9, D8 → GP2, D9 → GP3. SPI and RSTn
+  are also confirmed working on hardware; IRQ and WAKEUP are from the
+  schematic and have not been exercised yet (they are first needed by the
+  interrupt example, ex_03d).
+- *ArduPico:* SPI and RSTn (GP7) are confirmed on hardware. IRQ and WAKEUP are
+  `None` in `port.py` rather than guessed — code that needs them raises a clear
+  error. To fill them in, check which RP2040 GPIO the ArduPico routes to
+  Arduino D8 and D9.
 
-## Confirming your mapping without a scope
+**Notes**
 
-1. Set `PINS` to your best guess.
-2. Run `examples/ex_00a_reading_dev_id/main.py`.
-3. If it hangs or reads back `0x00000000` / `0xffffffff`, the SPI or CS
-   line is wrong — check MOSI/MISO/SCK/CS first (dev-ID read doesn't
-   depend on RESET/IRQ/WAKEUP being correct).
-4. If it reads back a plausible-looking but non-`0xdeca....` ID, RESET
-   may be wired wrong (chip never came out of reset cleanly) — check
-   RSTn next.
+- On the ArduPico, GP20 is the RP2040's own reset line — not the DW3000's.
+- An earlier version of this file guessed IRQ = GP21 and WAKEUP = GP22. Both
+  were wrong: GP21 is the Arduino SCL pin and GP22 is not on the Arduino
+  headers. Polled-mode examples never use IRQ, so nothing exposed it.
+
+## Diagnosing a bad dev-ID read
+
+1. All-zero / all-one: SPI problem — check MOSI/MISO/SCK/CS first.
+2. Plausible but not `0xdeca....`: RSTn probably wrong — the chip never came
+   out of reset cleanly.
