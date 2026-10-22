@@ -67,6 +67,9 @@ PINS = {
 SPI_SLOW_HZ = 2_000_000
 SPI_FAST_HZ = 16_000_000
 
+# Safety valve for the interrupt servicing loop (see Port.service_irq).
+_ISR_MAX_PASSES = 16
+
 
 class Port:
     """
@@ -100,7 +103,18 @@ class Port:
         self.rst = Pin(self._rst_pin_no, Pin.IN)  # released by default
 
         # --- IRQ from DW3000 ---
-        self.irq = Pin(self.pins["irq"], Pin.IN) if self.pins["irq"] is not None else None
+        # The DW3000 drives this line push-pull (active high); the pull-down
+        # only stops it floating (and raising phantom interrupts) if the
+        # shield is absent.
+        self.irq = (Pin(self.pins["irq"], Pin.IN, Pin.PULL_DOWN)
+                    if self.pins["irq"] is not None else None)
+
+        # --- interrupt dispatch state (see set_dwic_isr) ---
+        self.spi_busy = False       # True while an SPI transaction is in flight
+        self.isr_pending = False    # an IRQ arrived mid-transaction / mid-ISR
+        self.isr_overruns = 0       # times the line was still high after the pass limit
+        self._isr = None
+        self._in_service = False
 
         # --- WAKEUP line to DW3000 ---
         self.wakeup = (Pin(self.pins["wakeup"], Pin.OUT, value=0)
@@ -128,6 +142,62 @@ class Port:
         rst = Pin(self._rst_pin_no, Pin.IN)  # release -> pulled high externally
         self.rst = rst
         time.sleep_ms(2)  # allow DW3000 internal boot to complete
+
+    # -----------------------------------------------------------------
+    # IRQ handling -- equivalent of port_set_dwic_isr() in upstream port.c
+    # -----------------------------------------------------------------
+    def set_dwic_isr(self, handler):
+        """
+        Install `handler` (normally decadriver's dwt_isr) to run whenever the
+        DW3000 raises its IRQ line (rising edge, as upstream).
+
+        The pin handler is a *soft* IRQ (hard=False): MicroPython schedules it
+        to run between bytecodes, which is what allows `handler` to do SPI
+        transfers and allocate memory.
+        """
+        if self.irq is None:
+            raise RuntimeError("IRQ pin not defined for board %r (see port.py)" % BOARD)
+        self._isr = handler
+        self.isr_pending = False
+        self.irq.irq(handler=self._irq_entry, trigger=Pin.IRQ_RISING, hard=False)
+
+    def clear_dwic_isr(self):
+        """Stop calling the handler (e.g. on exit)."""
+        if self.irq is not None:
+            self.irq.irq(handler=None)
+        self._isr = None
+
+    def _irq_entry(self, pin):
+        # Runs as a scheduled soft IRQ. If it landed in the middle of a
+        # main-loop SPI transaction, don't interleave with it: note it, and
+        # deca_spi services it the moment that transaction ends.
+        if self.spi_busy:
+            self.isr_pending = True
+            return
+        self.service_irq()
+
+    def service_irq(self):
+        """
+        Run the installed handler. Repeats while the IRQ line is still high or
+        another IRQ arrived meanwhile: the line is level-like (it stays high
+        while any enabled event is pending), so an event that arrives while the
+        handler is already running produces no fresh edge to trigger on.
+        """
+        if self._isr is None:
+            return
+        if self._in_service:        # re-entered from inside the handler's own SPI
+            self.isr_pending = True
+            return
+        self._in_service = True
+        try:
+            for _ in range(_ISR_MAX_PASSES):
+                self.isr_pending = False
+                self._isr()
+                if not (self.isr_pending or self.irq.value()):
+                    return
+            self.isr_overruns += 1  # still asserted after the limit
+        finally:
+            self._in_service = False
 
     def wakeup_pulse(self):
         """Pulse WAKEUP to bring the DW3000 out of low-power sleep."""

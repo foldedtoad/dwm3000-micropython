@@ -23,6 +23,7 @@ def writetospi(header: bytes, body: bytes) -> None:
     Write `header` immediately followed by `body` in a single SPI
     transaction (CS held low across both).
     """
+    port.spi_busy = True
     port.cs.value(0)
     try:
         port.spi.write(header)
@@ -30,6 +31,9 @@ def writetospi(header: bytes, body: bytes) -> None:
             port.spi.write(body)
     finally:
         port.cs.value(1)
+        port.spi_busy = False
+    if port.isr_pending:    # an interrupt arrived mid-transaction; service it now
+        port.service_irq()
 
 
 def readfromspi(header: bytes, readlength: int) -> bytes:
@@ -37,6 +41,7 @@ def readfromspi(header: bytes, readlength: int) -> bytes:
     Write `header`, then clock in `readlength` bytes, CS held low across
     both. Returns the bytes read (NOT including the header).
     """
+    port.spi_busy = True
     port.cs.value(0)
     try:
         port.spi.write(header)
@@ -44,4 +49,7 @@ def readfromspi(header: bytes, readlength: int) -> bytes:
         port.spi.readinto(buf)
     finally:
         port.cs.value(1)
+        port.spi_busy = False
+    if port.isr_pending:    # an interrupt arrived mid-transaction; service it now
+        port.service_irq()
     return bytes(buf)

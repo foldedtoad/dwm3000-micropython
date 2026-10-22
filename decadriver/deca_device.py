@@ -29,6 +29,7 @@ import utime as time
 
 from platform.deca_spi import writetospi, readfromspi
 from decadriver import deca_regs as R
+from decadriver.deca_types import DwtCbData, DwtRxDiag, DwtDeviceEntCnts
 
 
 # ===========================================================================
@@ -52,6 +53,16 @@ class _LocalData:
         self.lotID = 0
         self.otprev = 0
         self.init_xtrim = 0
+        # Interrupt callbacks (dwt_setcallbacks) and the single reused
+        # callback-data object handed to them by dwt_isr().
+        self.cbTxDone = None
+        self.cbRxOk = None
+        self.cbRxTo = None
+        self.cia_diagnostic = 0     # CIA diagnostic logging level (dwt_configciadiag)
+        self.cbRxErr = None
+        self.cbSPIErr = None
+        self.cbSPIRdy = None
+        self.cbData = DwtCbData()
 
 
 local = _LocalData()
@@ -801,3 +812,327 @@ def dwt_setrxtimeout(time_uus: int):
         dwt_or16bitoffsetreg(R.SYS_CFG_ID, 0, R.SYS_CFG_RXWTOE_BIT_MASK)
     else:
         dwt_and16bitoffsetreg(R.SYS_CFG_ID, 0, (~R.SYS_CFG_RXWTOE_BIT_MASK) & 0xFFFF)
+
+
+# ===========================================================================
+# Interrupts: callbacks, enable mask, and the interrupt service routine
+# ===========================================================================
+def dwt_setcallbacks(cbTxDone, cbRxOk, cbRxTo, cbRxErr, cbSPIErr=None, cbSPIRdy=None):
+    """
+    Register the functions dwt_isr() calls for each event class. Each takes one
+    argument (a DwtCbData). Pass None for any you don't need; the ISR then
+    skips that call, saving interrupt processing time.
+    """
+    local.cbTxDone = cbTxDone
+    local.cbRxOk = cbRxOk
+    local.cbRxTo = cbRxTo
+    local.cbRxErr = cbRxErr
+    local.cbSPIErr = cbSPIErr
+    local.cbSPIRdy = cbSPIRdy
+
+
+def dwt_setinterrupt(bitmask_lo: int, bitmask_hi: int, INT_options: int):
+    """
+    Choose which SYS_STATUS events raise the IRQ line.
+    DWT_ENABLE_INT_ONLY: the masks replace the enable registers.
+    DWT_ENABLE_INT:      the mask bits are added (OR-ed in).
+    DWT_DISABLE_INT:     the mask bits are removed.
+    """
+    if INT_options == R.DWT_ENABLE_INT_ONLY:
+        dwt_write32bitreg(R.SYS_ENABLE_LO_ID, bitmask_lo)
+        dwt_write32bitreg(R.SYS_ENABLE_HI_ID, bitmask_hi)
+    elif INT_options == R.DWT_ENABLE_INT:
+        dwt_or32bitoffsetreg(R.SYS_ENABLE_LO_ID, 0, bitmask_lo)
+        dwt_or32bitoffsetreg(R.SYS_ENABLE_HI_ID, 0, bitmask_hi)
+    else:
+        dwt_and32bitoffsetreg(R.SYS_ENABLE_LO_ID, 0, (~bitmask_lo) & 0xFFFFFFFF)
+        dwt_and32bitoffsetreg(R.SYS_ENABLE_HI_ID, 0, (~bitmask_hi) & 0xFFFFFFFF)
+
+
+def dwt_isr():
+    """
+    The DW3000's general interrupt service routine: reads which events fired,
+    clears them, and calls the registered callbacks. Handles TX done, RX good
+    frame, RX timeout, RX error, SPI-ready and SPI-error events. Does NOT
+    support double-buffered RX or automatic RX re-enabling (same as upstream).
+
+    Ported from upstream dwt_isr(), single-RX-buffer mode only.
+    """
+    cb = local.cbData
+
+    # Read the fast status register, then the full status register.
+    fstat = dwt_read8bitoffsetreg(R.FINT_STAT_ID, 0)
+    status = dwt_read32bitreg(R.SYS_STATUS_ID)
+    cb.status = status
+
+    nodata_sts = (local.stsconfig & R.DWT_STS_MODE_ND) == R.DWT_STS_MODE_ND
+    if nodata_sts:
+        # FSTAT can't be used in no-data STS mode: a frame is reported by RXFR.
+        if status & R.SYS_STATUS_RXFR_BIT_MASK:
+            fstat |= R.FINT_STAT_RXOK_BIT_MASK
+
+    # System panic (AES_ERR|SPICRCERR|BRNOUT|SPI_UNF|SPI_OVR|CMD_ERR|SPI_COLLISION|PLLHILO)
+    if fstat & R.FINT_STAT_SYS_PANIC_BIT_MASK:
+        cb.status_hi = dwt_read16bitoffsetreg(R.SYS_STATUS_HI_ID, 0)
+        spi_err_bits = (R.SYS_STATUS_HI_SPIERR_BIT_MASK | R.SYS_STATUS_HI_SPI_UNF_BIT_MASK |
+                        R.SYS_STATUS_HI_SPI_OVF_BIT_MASK)
+
+        # SPI CRC error on a write, or an SPI error: the last SPI transaction
+        # did not complete correctly and the device should be reset.
+        if (local.spicrc and (cb.status & R.SYS_STATUS_SPICRCE_BIT_MASK)) or (cb.status_hi & spi_err_bits):
+            dwt_write32bitreg(R.SYS_STATUS_ID, R.SYS_STATUS_SPICRCE_BIT_MASK)
+            dwt_write16bitoffsetreg(R.SYS_STATUS_HI_ID, 0, spi_err_bits)
+            if local.cbSPIErr is not None:
+                local.cbSPIErr(cb)
+
+        # Fast-command error: the last command did not execute (e.g. it was
+        # issued while the device was busy with the previous one).
+        if cb.status_hi & R.SYS_STATUS_HI_CMD_ERR_BIT_MASK:
+            dwt_write16bitoffsetreg(R.SYS_STATUS_HI_ID, 0, R.SYS_STATUS_HI_CMD_ERR_BIT_MASK)
+
+    # TX frame sent. Events are cleared before the callback so the callback may
+    # schedule another TX/RX.
+    if fstat & R.FINT_STAT_TXOK_BIT_MASK:
+        dwt_write8bitoffsetreg(R.SYS_STATUS_ID, 0, R.SYS_STATUS_ALL_TX & 0xFF)
+        if local.cbTxDone is not None:
+            local.cbTxDone(cb)
+
+    # SPI ready / IDLE_RC: set when the device powers on or wakes up. Cleared
+    # after the callback so the callback can still read SYS_STATUS.
+    if fstat & R.FINT_STAT_SYS_EVENT_BIT_MASK:
+        if local.cbSPIRdy is not None:
+            local.cbSPIRdy(cb)
+        dwt_write16bitoffsetreg(R.SYS_STATUS_ID, 2,
+                                (R.SYS_STATUS_RCINIT_BIT_MASK | R.SYS_STATUS_SPIRDY_BIT_MASK) >> 16)
+
+    # RX good frame.
+    if fstat & R.FINT_STAT_RXOK_BIT_MASK:
+        if local.dblbuffon:
+            raise NotImplementedError("dwt_isr: double-buffered RX is not ported")
+
+        cia_err = 0
+        cb.rx_flags = 0
+
+        # CIA error: clear it too, so we don't go on to the RX-error callback.
+        if status & R.SYS_STATUS_CIAERR_BIT_MASK:
+            cb.rx_flags |= R.DWT_CB_DATA_RX_FLAG_CER
+            cia_err = R.SYS_STATUS_CIAERR_BIT_MASK
+        elif status & R.SYS_STATUS_CIADONE_BIT_MASK:
+            cb.rx_flags |= R.DWT_CB_DATA_RX_FLAG_CIA
+
+        if status & R.SYS_STATUS_CPERR_BIT_MASK:
+            cb.rx_flags |= R.DWT_CB_DATA_RX_FLAG_CPER
+            cia_err |= R.SYS_STATUS_CPERR_BIT_MASK
+
+        if (status & R.SYS_STATUS_RXFR_BIT_MASK) and nodata_sts:
+            # No-data STS mode reports RXFR, not RXFCG.
+            cb.rx_flags |= R.DWT_CB_DATA_RX_FLAG_ND
+            cb.datalength = 0
+            cia_err |= R.SYS_STATUS_RXFCE_BIT_MASK
+        elif status & R.SYS_STATUS_RXFCG_BIT_MASK:
+            finfo16 = dwt_read16bitoffsetreg(R.RX_FINFO_ID, 0)
+
+            # Standard frames up to 127 bytes, extended frames up to 1023.
+            if local.longFrames == 0:
+                cb.datalength = finfo16 & R.RX_FINFO_STD_RXFLEN_MASK
+            else:
+                cb.datalength = finfo16 & R.RX_FINFO_RXFLEN_BIT_MASK
+
+            if finfo16 & R.RX_FINFO_RNG_BIT_MASK:
+                cb.rx_flags |= R.DWT_CB_DATA_RX_FLAG_RNG
+
+        # Clear all status bits relating to good reception.
+        dwt_write32bitreg(R.SYS_STATUS_ID, cia_err | R.SYS_STATUS_ALL_RX_GOOD)
+
+        if local.cbRxOk is not None:
+            local.cbRxOk(cb)
+
+    # RX errors (RXFCE|RXPHE|RXFSL|ARFE|RXSTO|RXOVRR). Cleared before the
+    # callback so the callback may re-enable the receiver.
+    if fstat & R.FINT_STAT_RXERR_BIT_MASK:
+        dwt_write32bitoffsetreg(R.SYS_STATUS_ID, 0, R.SYS_STATUS_ALL_RX_ERR)
+        if local.cbRxErr is not None:
+            local.cbRxErr(cb)
+
+    # RX timeouts (RXFTO and RXPTO). Cleared before the callback, as above.
+    if fstat & R.FINT_STAT_RXTO_BIT_MASK:
+        dwt_write8bitoffsetreg(R.SYS_STATUS_ID, 2, (R.SYS_STATUS_ALL_RX_TO >> 16) & 0xFF)
+        if local.cbRxTo is not None:
+            local.cbRxTo(cb)
+
+
+# ===========================================================================
+# Diagnostics, accumulator and event counters (used by ex_02c)
+# Ported from deca_device.c: dwt_configciadiag, dwt_readdiagnostics (the
+# normal, non-double-buffer branch), dwt_readaccdata, dwt_configeventcounters,
+# dwt_readeventcounters.
+# ===========================================================================
+def dwt_configciadiag(enable_mask: int):
+    """
+    Choose how much the CIA logs.  DW_CIA_DIAG_LOG_ALL (0x1) logs everything;
+    0 logs a reduced set.  MAX/MID/MIN (0x8/0x4/0x2) apply to double-buffer mode.
+    """
+    if enable_mask & R.DW_CIA_DIAG_LOG_ALL:
+        dwt_and8bitoffsetreg(R.CIA_CONF_ID, 2, (~R.CIA_DIAGNOSTIC_OFF) & 0xFF)
+    else:
+        dwt_or8bitoffsetreg(R.CIA_CONF_ID, 2, R.CIA_DIAGNOSTIC_OFF)
+
+    dwt_write8bitoffsetreg(R.RDB_DIAG_MODE_ID, 0, enable_mask >> 1)
+
+    local.cia_diagnostic = enable_mask
+
+
+def _le(buf, off, n):
+    """Little-endian unsigned integer of n bytes from buf[off:]."""
+    return int.from_bytes(buf[off:off + n], "little")
+
+
+def dwt_readdiagnostics(diag=None) -> DwtRxDiag:
+    """
+    Read the RX signal-quality diagnostics. Fills and returns `diag` (a new
+    DwtRxDiag if none is given). Double-buffer mode is not ported.
+    """
+    if diag is None:
+        diag = DwtRxDiag()
+    if local.dblbuffon != R.DBL_BUFF_OFF:
+        raise NotImplementedError("dwt_readdiagnostics: double-buffer mode not ported")
+
+    ip = R.IP_TOA_LO_ID             # all offsets below are relative to this
+    log_all = local.cia_diagnostic & R.DW_CIA_DIAG_LOG_ALL
+
+    if log_all:
+        # 0xC0000 space (108 bytes) then 0xD0000 space (108 bytes)
+        temp = dwt_readfromdevice(R.IP_TOA_LO_ID, 0, 108) + dwt_readfromdevice(R.STS_DIAG_4_ID, 0, 108)
+    else:
+        temp = dwt_readfromdevice(R.IP_TOA_LO_ID, 0, 40)
+
+    diag.ipatovRxTime = bytes(temp[0:5])
+    diag.stsRxTime = bytes(temp[R.STS_TOA_LO_ID - ip:R.STS_TOA_LO_ID - ip + 5])
+    diag.sts2RxTime = bytes(temp[R.STS1_TOA_LO_ID - ip:R.STS1_TOA_LO_ID - ip + 5])
+    # tdoa is 6 bytes (the C loop copies 5 and then [5] separately)
+    diag.tdoa = bytes(temp[R.CIA_TDOA_0_ID - ip:R.CIA_TDOA_0_ID - ip + 6])
+
+    o = R.IP_TOA_HI_ID - ip
+    diag.ipatovRxStatus = temp[o + R.CIA_I_STAT_OFFSET]
+    diag.ipatovPOA = _le(temp, o + 1, 2)
+
+    # (sic) upstream computes the STS statuses as (hi byte | lo byte) >> 7,
+    # and for STS1 reads the low byte from the STS (not STS1) register.
+    o = R.STS_TOA_HI_ID - ip
+    diag.stsRxStatus = (temp[o + R.CIA_C_STAT_OFFSET + 1] | temp[o + R.CIA_C_STAT_OFFSET]) >> 7
+    diag.stsPOA = _le(temp, o + 1, 2)
+
+    o1 = R.STS1_TOA_HI_ID - ip
+    diag.sts2RxStatus = (temp[o1 + R.CIA_C_STAT_OFFSET + 1] | temp[o + R.CIA_C_STAT_OFFSET]) >> 7
+    diag.sts2POA = _le(temp, o1 + 1, 2)
+
+    pdoa = _le(temp, R.CIA_TDOA_1_PDOA_ID - ip + 2, 2) & 0x3FFF
+    if pdoa & 0x2000:
+        pdoa |= 0xC000              # sign-extend as upstream does...
+    # ...upstream stores into an int16_t, so 0xC000.. becomes negative
+    diag.pdoa = pdoa - 0x10000 if pdoa & 0x8000 else pdoa
+
+    diag.xtalOffset = _le(temp, R.CIA_DIAG_0_ID - ip, 2) & 0x1FFF
+    diag.ciaDiag1 = _le(temp, R.CIA_DIAG_1_ID - ip, 4) & 0x1FFFFFFF
+
+    if not log_all:
+        return diag                 # minimal diagnostics only
+
+    # --- Ipatov ---
+    diag.ipatovPeak = _le(temp, R.IP_DIAG_0_ID - ip, 4) & 0x7FFFFFFF
+    diag.ipatovPower = _le(temp, R.IP_DIAG_1_ID - ip, 4) & 0x1FFFF
+    diag.ipatovF1 = _le(temp, R.IP_DIAG_2_ID - ip, 4) & 0x3FFFFF
+    diag.ipatovF2 = _le(temp, R.IP_DIAG_3_ID - ip, 4) & 0x3FFFFF
+    diag.ipatovF3 = _le(temp, R.IP_DIAG_4_ID - ip, 4) & 0x3FFFFF
+    diag.ipatovFpIndex = _le(temp, R.IP_DIAG_8_ID - ip, 2)
+    diag.ipatovAccumCount = _le(temp, R.IP_DIAG_12_ID - ip, 2) & 0xFFF
+
+    # --- STS 1 ---
+    diag.stsPeak = _le(temp, R.STS_DIAG_0_ID - ip, 4) & 0x3FFFFFFF
+    diag.stsPower = _le(temp, R.STS_DIAG_1_ID - ip, 2)
+    diag.stsF1 = _le(temp, R.STS_DIAG_2_ID - ip, 4) & 0x3FFFFF
+    diag.stsF2 = _le(temp, R.STS_DIAG_3_ID - ip, 4) & 0x3FFFFF
+
+    # the 0xD0000 block starts 0x6C bytes into temp (0xC0000 space is 0x6C long)
+    d = 0x6C
+    diag.stsF3 = _le(temp, R.STS_DIAG_4_ID - R.STS_DIAG_4_ID + d, 4) & 0x3FFFFF
+    diag.stsFpIndex = _le(temp, R.STS_DIAG_8_ID - R.STS_DIAG_4_ID + d, 2) & 0x7FFF
+    diag.stsAccumCount = _le(temp, R.STS_DIAG_12_ID - R.STS_DIAG_4_ID + d, 2) & 0xFFF
+
+    # --- STS 2 ---
+    diag.sts2Peak = _le(temp, R.STS1_DIAG_0_ID - R.STS_DIAG_4_ID + d, 4) & 0x3FFFFFFF
+    diag.sts2Power = _le(temp, R.STS1_DIAG_1_ID - R.STS_DIAG_4_ID + d, 2)
+    diag.sts2F1 = _le(temp, R.STS1_DIAG_2_ID - R.STS_DIAG_4_ID + d, 4) & 0x3FFFFF
+    diag.sts2F2 = _le(temp, R.STS1_DIAG_3_ID - R.STS_DIAG_4_ID + d, 4) & 0x3FFFFF
+    diag.sts2F3 = _le(temp, R.STS1_DIAG_4_ID - R.STS_DIAG_4_ID + d, 4) & 0x3FFFFF
+    diag.sts2FpIndex = _le(temp, R.STS1_DIAG_8_ID - R.STS_DIAG_4_ID + d, 2) & 0x7FFF
+    diag.sts2AccumCount = _le(temp, R.STS1_DIAG_12_ID - R.STS_DIAG_4_ID + d, 2) & 0xFFF
+    return diag
+
+
+def dwt_readaccdata(length: int, accOffset: int) -> bytes:
+    """
+    Read `length` bytes of the CIR accumulator starting at complex-sample index
+    `accOffset`. The FIRST byte returned is a dummy and must be discarded by
+    the caller (as upstream documents). Returns the raw bytes.
+    """
+    # Force on the ACC clocks if we are sequenced
+    dwt_or16bitoffsetreg(R.CLK_CTRL_ID, 0x0, R.CLK_CTRL_ACC_MCLK_EN_BIT_MASK | R.CLK_CTRL_ACC_CLK_EN_BIT_MASK)
+
+    try:
+        if (accOffset + length) > R.ACC_BUFFER_MAX_LEN:
+            raise ValueError("dwt_readaccdata: range exceeds accumulator")      # upstream: assert(0)
+        if accOffset <= R.REG_DIRECT_OFFSET_MAX_LEN:
+            data = dwt_readfromdevice(R.ACC_MEM_ID, accOffset, length)
+        else:
+            # Program the indirect offset registers A for the specified offset to ACC
+            dwt_write32bitreg(R.INDIRECT_ADDR_A_ID, (R.ACC_MEM_ID >> 16))
+            dwt_write32bitreg(R.ADDR_OFFSET_A_ID, accOffset)
+            data = dwt_readfromdevice(R.INDIRECT_POINTER_A_ID, 0, length)
+    finally:
+        # Revert clocks back
+        dwt_and16bitoffsetreg(R.CLK_CTRL_ID, 0x0,
+                              (~(R.CLK_CTRL_ACC_MCLK_EN_BIT_MASK | R.CLK_CTRL_ACC_CLK_EN_BIT_MASK)) & 0xFFFF)
+    return data
+
+
+def dwt_configeventcounters(enable: int):
+    """Clear (and, if `enable`, start) the event counters."""
+    # Need to clear and disable, can't just clear
+    dwt_write8bitoffsetreg(R.EVC_CTRL_ID, 0x0, R.EVC_CTRL_EVC_CLR_BIT_MASK)
+    if enable:
+        dwt_write8bitoffsetreg(R.EVC_CTRL_ID, 0x0, R.EVC_CTRL_EVC_EN_BIT_MASK)
+
+
+def dwt_readeventcounters(counters=None) -> DwtDeviceEntCnts:
+    """Read the event counters into `counters` (new object if None) and return it."""
+    if counters is None:
+        counters = DwtDeviceEntCnts()
+
+    t = dwt_read32bitoffsetreg(R.EVC_COUNT0_ID, 0)      # sync loss (27-16), PHE (11-0)
+    counters.PHE = t & 0xFFF
+    counters.RSL = (t >> 16) & 0xFFF
+
+    t = dwt_read32bitoffsetreg(R.EVC_COUNT1_ID, 0)      # CRC bad (27-16), CRC good (11-0)
+    counters.CRCG = t & 0xFFF
+    counters.CRCB = (t >> 16) & 0xFFF
+
+    t = dwt_read32bitoffsetreg(R.EVC_COUNT2_ID, 0)      # overruns (23-16), address errors (7-0)
+    counters.ARFE = t & 0xFF
+    counters.OVER = (t >> 16) & 0xFF
+
+    t = dwt_read32bitoffsetreg(R.EVC_COUNT3_ID, 0)      # PTO (27-16), SFDTO (11-0)
+    counters.PTO = (t >> 16) & 0xFFF
+    counters.SFDTO = t & 0xFFF
+
+    t = dwt_read32bitoffsetreg(R.EVC_COUNT4_ID, 0)      # TXFRAME (27-16), RX TO (7-0)
+    counters.TXF = (t >> 16) & 0xFFF
+    counters.RTO = t & 0xFF
+
+    t = dwt_read32bitoffsetreg(R.EVC_COUNT5_ID, 0)      # half period warning (7-0), SPI CRC err (23-16)
+    counters.HPW = t & 0xFF
+    counters.CRCE = (t >> 16) & 0xFF
+
+    t = dwt_read32bitoffsetreg(R.EVC_COUNT6_ID, 0)      # preamble rejections (11-0)
+    counters.PREJ = t & 0xFFF
+    return counters
