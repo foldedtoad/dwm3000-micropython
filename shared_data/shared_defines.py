@@ -23,3 +23,5 @@ FINAL_MSG_TS_LEN = 4
 # UWB microsecond (uus) to device time unit (dtu, ~15.65 ps) conversion factor:
 # 1 uus = 512 / 499.2 us and 1 us = 499.2 * 128 dtu.
 UUS_TO_DWT_TIME = 63898
+
+FRAME_LEN_MAX_EX = 1023         # extended frame length mode maximum

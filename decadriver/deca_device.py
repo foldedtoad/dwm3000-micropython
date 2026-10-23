@@ -1254,3 +1254,12 @@ def dwt_setdelayedtrxtime(starttime: int):
     (bit 0 is ignored by the chip, so the resolution is ~8 ns).
     """
     dwt_write32bitoffsetreg(R.DX_TIME_ID, 0, starttime)
+
+
+def dwt_setpreambledetecttimeout(timeout: int):
+    """
+    Preamble detection timeout (RXPTO event), in multiples of PAC size; the
+    counter adds one PAC to the value. 0 disables it (the receiver then stays on
+    until a frame arrives or the frame-wait timeout expires).
+    """
+    dwt_write16bitoffsetreg(R.DTUNE1_ID, 0, timeout)

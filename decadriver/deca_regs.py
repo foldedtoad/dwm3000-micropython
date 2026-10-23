@@ -567,3 +567,6 @@ TX_TIME_LO_ID = 0x74
 RX_TIME_RX_STAMP_LEN = 5
 TX_TIME_TX_STAMP_LEN = 5
 DWT_TIME_UNITS = 1.0 / 499.2e6 / 128.0     # device time unit in seconds (~15.65 ps)
+
+# --- ex_05 double-sided ranging (deca_regs.h) ---
+DTUNE1_ID = 0x60004
