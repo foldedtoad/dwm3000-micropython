@@ -16,7 +16,7 @@ upstream `deca_device.c` and its headers, so it is a derivative work (see
 | Layer | State |
 |---|---|
 | `platform/` (GPIO, reset, SPI open) | Implemented for RP2040. Pin mapping **confirmed on real ArduPico hardware** (dev-ID read succeeds). |
-| `decadriver/` (register-level DW3000 driver) | `dwt_xfer3000` (all 3 SPI header modes), offset-register read/write/modify, OTP read, `dwt_initialise`, `dwt_configure` (non-SCP path), `dwt_configuretxrf`, TX path (`dwt_writetxdata`/`dwt_writetxfctrl`/`dwt_starttx`), `dwt_setleds`. Diagnostics: `dwt_configciadiag`, `dwt_readdiagnostics` (normal mode), `dwt_readaccdata`, `dwt_configeventcounters`, `dwt_readeventcounters`. RX path: `dwt_rxenable` (immediate + delayed), `dwt_readrxdata`, `dwt_setrxaftertxdelay`, `dwt_setrxtimeout`, interrupts (`dwt_setcallbacks`, `dwt_setinterrupt`, `dwt_isr`; single RX buffer only). Ranging, timestamps, STS/PDOA/AES **not yet ported**. |
+| `decadriver/` (register-level DW3000 driver) | `dwt_xfer3000` (all 3 SPI header modes), offset-register read/write/modify, OTP read, `dwt_initialise`, `dwt_configure` (non-SCP path), `dwt_configuretxrf`, TX path (`dwt_writetxdata`/`dwt_writetxfctrl`/`dwt_starttx`), `dwt_setleds`. Diagnostics: `dwt_configciadiag`, `dwt_readdiagnostics` (normal mode), `dwt_readaccdata`, `dwt_configeventcounters`, `dwt_readeventcounters`. SNIFF mode: `dwt_setsniffmode`, `dwt_setlnapamode`. Crystal trim: `dwt_setxtaltrim`, `dwt_getxtaltrim`, `dwt_readclockoffset`. RX path: `dwt_rxenable` (immediate + delayed), `dwt_readrxdata`, `dwt_setrxaftertxdelay`, `dwt_setrxtimeout`, interrupts (`dwt_setcallbacks`, `dwt_setinterrupt`, `dwt_isr`; single RX buffer only). Ranging, timestamps, STS/PDOA/AES **not yet ported**. |
 | `shared_data/` | `FRAME_LEN_MAX` only so far; ranging structures to be added with `ex_05*`/`ex_06*` |
 | `examples/ex_00a_reading_dev_id` | **Working, verified on hardware** — reads back `0xdeca0302` |
 | `examples/ex_01a_simple_tx` | **Working, verified on hardware** — frames going out every 500ms, clean status polling, graceful Ctrl-C handling. |
@@ -25,8 +25,10 @@ upstream `deca_device.c` and its headers, so it is a derivative work (see
 | `examples/ex_03b_rx_send_resp` | **Working, verified on hardware.** Receives the `ex_03a` blink frame and replies to its sender. |
 | `examples/ex_03a_tx_wait_resp` | **Working, verified on hardware.** Sends a blink, then waits for the response (with timeout). Run `ex_03b` on the other board. |
 | `examples/ex_03d_tx_wait_resp_interrupts` | **Success path verified on hardware** (timeout and Ctrl-C paths not yet tried). The ex_03a exchange driven by the DW3000 IRQ line. First use of the IRQ pin (GP2 on the Flexypin, from its schematic). Run `ex_03b` on the other board. |
-| `examples/ex_02c_rx_diagnostics` | **Ported, passes unit + end-to-end tests. Not yet run on hardware.** Polled RX; after each good frame prints CIA diagnostics (first path, F1/F2/F3, peak, xtal offset) and raw accumulator bytes; after every event prints the event counters. Pair with `ex_01a_simple_tx`. |
-| Remaining examples (`ex_02d`+, ranging, ...) | Not started |
+| `examples/ex_02c_rx_diagnostics` | **Working, verified on hardware** (CRCG counts frames, first-path index steady ~740, no errors). Polled RX; after each good frame prints CIA diagnostics (first path, F1/F2/F3, peak, xtal offset) and raw accumulator bytes; after every event prints the event counters. Pair with `ex_01a_simple_tx`. |
+| `examples/ex_02d_rx_sniff` | **Working, verified on hardware** (consecutive sequence numbers received, no errors at the default 50% duty cycle). Same polled RX as ex_02a with SNIFF mode (receiver duty-cycled ~50%). Pair with `ex_01a_simple_tx`. |
+| `examples/ex_02f_rx_with_crystal_trim` | **Ported, passes unit + end-to-end tests. Not yet run on hardware.** Receiver measures the transmitter's clock offset after each good frame and trims its own crystal until the offset is 2-4 ppm. Prints offset and trim per frame. Pair with `ex_01a_simple_tx`. |
+| Remaining examples (`ex_02g`+, ranging, ...) | Not started |
 
 The original `decadriver/deca_device.c` is ~5,000 lines of register-level
 init/config/TX/RX/ranging logic. Every function used by `ex_00a` and
@@ -101,9 +103,11 @@ issue the tests could not: MicroPython's slower turnaround made upstream's
    a WARNING with the IRQ pin level and `SYS_STATUS`: level 0 with status
    bits set means the IRQ wire isn't reaching the Pico (check GP2 / Arduino
    D8).
-7. **Run `ex_02c_rx_diagnostics`** with `ex_01a_simple_tx` on the other board. Each good frame prints a `first path idx` line (expect a value near the preamble position, plausibly typically a few hundred samples in; the exact value depends on the setup), `ipatov peak/F1/F2/F3`, and raw accumulator bytes; every event prints the counters (`CRCG` should climb with each received frame). Known upstream quirk kept as-is: the accumulator offset is passed as a byte offset, so accumulator bytes are shown raw, not decoded.
-8. **Deferred:** improve interrupt latency (ex_03d round trip ~8-10 ms vs ~6-7 ms polled), possibly with PIO; measure where the overhead goes first.
-9. Further examples (ranging `ex_05*`/`ex_06*`) — each pulls in more of `decadriver`
+7. ~~`ex_02c_rx_diagnostics`~~ — **done**, verified on hardware. (Original note:) Run it with `ex_01a_simple_tx` on the other board. Each good frame prints a `first path idx` line (expect a value near the preamble position, plausibly typically a few hundred samples in; the exact value depends on the setup), `ipatov peak/F1/F2/F3`, and raw accumulator bytes; every event prints the counters (`CRCG` should climb with each received frame). Known upstream quirk kept as-is: the accumulator offset is passed as a byte offset, so accumulator bytes are shown raw, not decoded.
+8. ~~`ex_02d_rx_sniff`~~ — **done**, verified on hardware. (Original note:) Run it with `ex_01a_simple_tx` on the other board. Expect frames like ex_02a, but possibly with some missed frames or `receive error:` lines, since the receiver is only on part of the time. Compare how many of the TX's sequence numbers arrive versus ex_02a.
+9. **Run `ex_02f_rx_with_crystal_trim`** with `ex_01a_simple_tx` on the other board. Each frame prints `seq N  offset +X.XX ppm  trim T`. Your boards' offset was ~0.5 ppm in ex_02c, which is below the 2 ppm minimum, so the first frames should show `(adjusted)` with the trim value dropping by about 3, after which the offset should settle to a magnitude between 2 and 4 ppm and stop adjusting. Only the receiver's crystal is trimmed; the transmitter is untouched.
+10. **Deferred:** improve interrupt latency (ex_03d round trip ~8-10 ms vs ~6-7 ms polled), possibly with PIO; measure where the overhead goes first.
+11. Further examples (ranging `ex_05*`/`ex_06*`) — each pulls in more of `decadriver`
    (timestamps, antenna delay, diagnostics) and `shared_data`.
 
 ## License and attribution

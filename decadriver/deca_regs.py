@@ -532,3 +532,30 @@ STS1_DIAG_8_ID = 0xd0058
 STS1_DIAG_12_ID = 0xd0068
 ACC_BUFFER_MAX_LEN = 12288 + 1      # +1 is needed for the "dummy" first byte read
 CIA_DIAGNOSTIC_OFF = 0x1 << 4       # bit4 in CIA_CONF + 2
+
+# --- ex_02d sniff mode / LNA-PA GPIO (from deca_regs.h, deca_device_api.h) ---
+GPIO_MODE_MSGP0_MODE_BIT_MASK = 0x7
+GPIO_MODE_MSGP1_MODE_BIT_MASK = 0x38
+GPIO_MODE_MSGP4_MODE_BIT_MASK = 0x7000
+GPIO_MODE_MSGP5_MODE_BIT_MASK = 0x38000
+GPIO_MODE_MSGP6_MODE_BIT_MASK = 0x1C0000
+GPIO_PIN0_EXTTXE = 0x2 << 0
+GPIO_PIN1_EXTRXE = 0x2 << 3
+GPIO_PIN4_EXTDA = 0x1 << 12
+GPIO_PIN5_EXTTX = 0x1 << 15
+GPIO_PIN6_EXTRX = 0x1 << 18
+DWT_LNA_ENABLE = 0x01
+DWT_PA_ENABLE = 0x02
+DWT_TXRX_EN = 0x04
+RX_SNIFF_ID = 0x11001A
+RX_SNIFF_SNIFF_OFF_BIT_MASK = 0xFF00
+RX_SNIFF_SNIFF_ON_BIT_MASK = 0xF
+
+# --- ex_02f crystal trim / clock offset (from deca_regs.h, deca_vals.h, deca_device_api.h, deca_device.c) ---
+XTAL_XTAL_TRIM_BIT_OFFSET = 0
+XTAL_TRIM_BIT_MASK = 0x3F           # max allowed value for XTAL trim (deca_vals.h)
+CIA_DIAG_0_COE_PPM_BIT_MASK = 0x1FFF
+CLOCK_OFFSET_PPM_TO_RATIO = 1.0 / (1 << 26)
+B11_SIGN_EXTEND_TEST = 0x1000       # deca_device.c
+B11_SIGN_EXTEND_MASK = 0xE000       # deca_device.c
+DBL_BUFF_ACCESS_BUFFER_0 = 0x1

@@ -1136,3 +1136,75 @@ def dwt_readeventcounters(counters=None) -> DwtDeviceEntCnts:
     t = dwt_read32bitoffsetreg(R.EVC_COUNT6_ID, 0)      # preamble rejections (11-0)
     counters.PREJ = t & 0xFFF
     return counters
+
+
+# ===========================================================================
+# SNIFF mode and LNA/PA GPIO (used by ex_02d)
+# Ported from deca_device.c: dwt_setlnapamode, dwt_setsniffmode.
+# ===========================================================================
+def dwt_setlnapamode(lna_pa: int):
+    """
+    Route the DW3000 GPIOs to external LNA/PA control (also handy to watch TX/RX
+    activity on a scope). bit0 = LNA (GPIO6 EXTRX), bit1 = PA (GPIO4 EXTDA +
+    GPIO5 EXTTX), bit2 = TXE/RXE (GPIO0/GPIO1). 0 disables them all.
+    """
+    gpio_mode = dwt_read32bitreg(R.GPIO_MODE_ID)
+    # clear GPIO 0, 1, 4, 5, 6 configuration
+    gpio_mode &= ~(R.GPIO_MODE_MSGP0_MODE_BIT_MASK | R.GPIO_MODE_MSGP1_MODE_BIT_MASK
+                   | R.GPIO_MODE_MSGP4_MODE_BIT_MASK | R.GPIO_MODE_MSGP5_MODE_BIT_MASK
+                   | R.GPIO_MODE_MSGP6_MODE_BIT_MASK)
+    gpio_mode &= 0xFFFFFFFF
+    if lna_pa & R.DWT_LNA_ENABLE:
+        gpio_mode |= R.GPIO_PIN6_EXTRX
+    if lna_pa & R.DWT_PA_ENABLE:
+        gpio_mode |= (R.GPIO_PIN4_EXTDA | R.GPIO_PIN5_EXTTX)
+    if lna_pa & R.DWT_TXRX_EN:
+        gpio_mode |= (R.GPIO_PIN0_EXTTXE | R.GPIO_PIN1_EXTRXE)
+
+    dwt_write32bitreg(R.GPIO_MODE_ID, gpio_mode)
+
+
+def dwt_setsniffmode(enable: int, timeOn: int, timeOff: int):
+    """
+    Enable/disable SNIFF mode (receiver duty-cycled on/off).
+    timeOn: ON phase in PAC sizes (+1 PAC added by the IC), 1..15.
+    timeOff: OFF phase in units of 128/125 us (~1 us), max 255.
+    """
+    if enable:
+        sniff_reg = (((timeOff & 0xFF) << 8) | (timeOn & 0xFF)) & \
+            (R.RX_SNIFF_SNIFF_OFF_BIT_MASK | R.RX_SNIFF_SNIFF_ON_BIT_MASK)
+        dwt_write16bitoffsetreg(R.RX_SNIFF_ID, 0, sniff_reg)
+    else:
+        dwt_write16bitoffsetreg(R.RX_SNIFF_ID, 0, 0x0000)
+
+
+# ===========================================================================
+# Crystal trim and clock offset (used by ex_02f)
+# Ported from deca_device.c: dwt_setxtaltrim, dwt_getxtaltrim, dwt_readclockoffset.
+# ===========================================================================
+def dwt_setxtaltrim(value: int):
+    """Adjust the crystal frequency. `value` is 0x00..0x3F (64 steps, ~1.65 ppm/step)."""
+    reg_val = (value & R.XTAL_TRIM_BIT_MASK) >> R.XTAL_XTAL_TRIM_BIT_OFFSET
+    local.init_xtrim = reg_val
+    dwt_write8bitoffsetreg(R.XTAL_ID, 0, reg_val)
+
+
+def dwt_getxtaltrim() -> int:
+    """Current XTAL trim: the OTP/default value after dwt_initialise, or the last dwt_setxtaltrim."""
+    return local.init_xtrim
+
+
+def dwt_readclockoffset() -> int:
+    """
+    Read the crystal offset of the remote device relative to this one, as a signed
+    value; multiply by CLOCK_OFFSET_PPM_TO_RATIO (1/2^26) for the ratio, or by
+    CLOCK_OFFSET_PPM_TO_RATIO * 1e6 for ppm. Positive means the local RX clock is
+    running faster than the remote TX clock. Call before re-enabling the receiver.
+    (Double-buffer mode is not ported.)
+    """
+    if local.dblbuffon != R.DBL_BUFF_OFF:
+        raise NotImplementedError("dwt_readclockoffset: double-buffer mode not ported")
+    regval = dwt_read16bitoffsetreg(R.CIA_DIAG_0_ID, 0) & R.CIA_DIAG_0_COE_PPM_BIT_MASK
+    if regval & R.B11_SIGN_EXTEND_TEST:
+        regval |= R.B11_SIGN_EXTEND_MASK        # sign extend bit #12 to the whole short
+    return regval - 0x10000 if regval & 0x8000 else regval   # as int16_t
