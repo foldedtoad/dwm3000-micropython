@@ -28,8 +28,8 @@ definition (`boards/shields/qorvo_dwm3000`), it uses:
   (`solderparty/flexypin_adapters_hw`, `rpi_pico_uno_flexypin`): header pads
   D13/D12/D11/D10 → GP18/16/19/17, D7 → GP9, D8 → GP2, D9 → GP3. SPI and RSTn
   are also confirmed working on hardware; IRQ and WAKEUP are from the
-  schematic and have not been exercised yet (they are first needed by the
-  interrupt example, ex_03d).
+  schematic and have not been exercised yet (ex_03d is the first example
+  to use IRQ, and prints a diagnostic if the line never fires).
 - *ArduPico:* SPI and RSTn (GP7) are confirmed on hardware. IRQ and WAKEUP are
   `None` in `port.py` rather than guessed — code that needs them raises a clear
   error. To fill them in, check which RP2040 GPIO the ArduPico routes to

@@ -559,3 +559,11 @@ CLOCK_OFFSET_PPM_TO_RATIO = 1.0 / (1 << 26)
 B11_SIGN_EXTEND_TEST = 0x1000       # deca_device.c
 B11_SIGN_EXTEND_MASK = 0xE000       # deca_device.c
 DBL_BUFF_ACCESS_BUFFER_0 = 0x1
+
+# --- ranging: timestamps / delayed TX (from deca_regs.h, deca_vals.h, deca_device_api.h) ---
+DX_TIME_ID = 0x2c
+RX_TIME_0_ID = 0x64
+TX_TIME_LO_ID = 0x74
+RX_TIME_RX_STAMP_LEN = 5
+TX_TIME_TX_STAMP_LEN = 5
+DWT_TIME_UNITS = 1.0 / 499.2e6 / 128.0     # device time unit in seconds (~15.65 ps)

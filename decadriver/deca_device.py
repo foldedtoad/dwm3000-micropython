@@ -1208,3 +1208,49 @@ def dwt_readclockoffset() -> int:
     if regval & R.B11_SIGN_EXTEND_TEST:
         regval |= R.B11_SIGN_EXTEND_MASK        # sign extend bit #12 to the whole short
     return regval - 0x10000 if regval & 0x8000 else regval   # as int16_t
+
+
+# ===========================================================================
+# Timestamps, antenna delays and delayed TX/RX (used by the ranging examples)
+# Ported from deca_device.c. Timestamps are 40-bit device times (~15.65 ps per
+# unit); the byte-array readers return the 5 raw bytes, little-endian.
+# ===========================================================================
+def dwt_setrxantennadelay(rxDelay: int):
+    """RX antenna delay, used for automatic RX timestamp adjustment."""
+    dwt_write16bitoffsetreg(R.CIA_CONF_ID, 0, rxDelay)
+
+
+def dwt_settxantennadelay(txDelay: int):
+    """TX antenna delay, used for automatic TX timestamp adjustment."""
+    dwt_write16bitoffsetreg(R.TX_ANTD_ID, 0, txDelay)
+
+
+def dwt_readtxtimestamp() -> bytes:
+    """The 5-byte (40-bit) TX timestamp, adjusted with the TX antenna delay."""
+    return dwt_readfromdevice(R.TX_TIME_LO_ID, 0, R.TX_TIME_TX_STAMP_LEN)
+
+
+def dwt_readtxtimestamplo32() -> int:
+    """Low 32 bits of the TX timestamp."""
+    return dwt_read32bitreg(R.TX_TIME_LO_ID)
+
+
+def dwt_readrxtimestamp() -> bytes:
+    """The 5-byte (40-bit) RX timestamp, adjusted with the RX antenna delay.
+    (Double-buffer mode is not ported.)"""
+    if local.dblbuffon != R.DBL_BUFF_OFF:
+        raise NotImplementedError("dwt_readrxtimestamp: double-buffer mode not ported")
+    return dwt_readfromdevice(R.RX_TIME_0_ID, 0, R.RX_TIME_RX_STAMP_LEN)
+
+
+def dwt_readrxtimestamplo32() -> int:
+    """Low 32 bits of the RX timestamp."""
+    return dwt_read32bitreg(R.RX_TIME_0_ID)
+
+
+def dwt_setdelayedtrxtime(starttime: int):
+    """
+    Time for a delayed TX/RX: the high 32 bits of the 40-bit device time
+    (bit 0 is ignored by the chip, so the resolution is ~8 ns).
+    """
+    dwt_write32bitoffsetreg(R.DX_TIME_ID, 0, starttime)
