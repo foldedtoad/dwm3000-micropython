@@ -261,6 +261,17 @@ def _dwt_prog_ldo_and_bias_tune():
     dwt_and_or16bitoffsetreg(R.BIAS_CTRL_ID, 0, (~R.BIAS_CTRL_BIAS_MASK) & 0xFFFF, local.bias_tune)
 
 
+def _dwt_kick_ops_table_on_wakeup():
+    """Restore the OPS table config after wake (sleep_mode is set by dwt_configure)."""
+    sel = local.sleep_mode & (R.DWT_ALT_OPS | R.DWT_SEL_OPS0 | R.DWT_SEL_OPS1 | R.DWT_SEL_OPS2 | R.DWT_SEL_OPS3)
+    if sel == (R.DWT_ALT_OPS | R.DWT_SEL_OPS0):         # long preamble (>= 256)
+        dwt_modify32bitoffsetreg(R.OTP_CFG_ID, 0, (~R.OTP_CFG_OPS_ID_BIT_MASK) & 0xFFFFFFFF,
+                                 R.DWT_OPSET_LONG | R.OTP_CFG_OPS_KICK_BIT_MASK)
+    elif sel == (R.DWT_ALT_OPS | R.DWT_SEL_OPS1):       # SCP mode
+        dwt_modify32bitoffsetreg(R.OTP_CFG_ID, 0, (~R.OTP_CFG_OPS_ID_BIT_MASK) & 0xFFFFFFFF,
+                                 R.DWT_OPSET_SCP | R.OTP_CFG_OPS_KICK_BIT_MASK)
+
+
 def _dwt_kick_dgc_on_wakeup(channel: int):
     if channel == 5:
         dwt_modify32bitoffsetreg(
@@ -1263,3 +1274,90 @@ def dwt_setpreambledetecttimeout(timeout: int):
     until a frame arrives or the frame-wait timeout expires).
     """
     dwt_write16bitoffsetreg(R.DTUNE1_ID, 0, timeout)
+
+
+# ===========================================================================
+# Sleep / wake-up
+# ===========================================================================
+def dwt_wakeup_ic():
+    """
+    Wake the device from sleep/deep sleep by toggling the WAKEUP pin (or, on a
+    board without one, holding CS low) for at least 500 us. Upstream calls the
+    platform function wakeup_device_with_io(); here that is port.wakeup_pulse().
+    The caller must then wait ~2 ms and check dwt_checkidlerc() (device goes
+    INIT_RC -> IDLE_RC) before using the SPI bus.
+    """
+    from platform.port import port
+    port.wakeup_pulse()
+
+
+def dwt_restoreconfig():
+    """
+    Restore the configuration that is NOT automatically restored from AON after
+    waking from SLEEP/DEEPSLEEP. Call it once the device is back in IDLE_RC.
+    """
+    channel = 5
+
+    if local.bias_tune != 0:
+        _dwt_prog_ldo_and_bias_tune()
+    dwt_write8bitoffsetreg(R.LDO_RLOAD_ID, 1, R.LDO_RLOAD_VAL_B1)
+    # Indirect access register B is not preserved in sleep: point it at the
+    # "double buffer diagnostic SET 2" again.
+    dwt_write32bitreg(R.INDIRECT_ADDR_B_ID, R.BUF1_RX_FINFO >> 16)
+    dwt_write32bitreg(R.ADDR_OFFSET_B_ID, R.BUF1_RX_FINFO & 0xFFFF)
+
+    # Restore the OPS table configuration
+    _dwt_kick_ops_table_on_wakeup()
+
+    chan_ctrl = dwt_read16bitoffsetreg(R.CHAN_CTRL_ID, 0)
+    # Assume the RX code is the same as the TX code.
+    # NOTE: upstream computes ((chan_ctrl >> OFFSET) & MASK) with MASK = 0xF8 (an
+    # in-place mask), which for code 9 evaluates to 40 and so never takes the DGC
+    # branch below. The evident intent (TX code 9..24 means PRF 64) is coded here:
+    # mask first, then shift.
+    tx_pcode = (chan_ctrl & R.CHAN_CTRL_TX_PCODE_BIT_MASK) >> R.CHAN_CTRL_TX_PCODE_BIT_OFFSET
+    if 9 <= tx_pcode <= 24:                 # DGC is only used with PRF 64
+        if chan_ctrl & 0x1:
+            channel = 9
+        if local.dgc_otp_set == R.DWT_DGC_LOAD_FROM_OTP:
+            _dwt_kick_dgc_on_wakeup(channel)
+        else:
+            dwt_configmrxlut(channel)
+
+
+def dwt_configuresleep(mode: int, wake: int):
+    """
+    Configure what is restored on wake (mode, e.g. DWT_CONFIG) and what wakes
+    the device / whether sleep is enabled (wake, e.g. DWT_PRES_SLEEP |
+    DWT_WAKE_CSN | DWT_WAKE_WUP | DWT_SLP_EN).
+    """
+    local.sleep_mode |= mode          # predefined settings from dwt_initialise/dwt_configure
+    dwt_write16bitoffsetreg(R.AON_DIG_CFG_ID, 0, local.sleep_mode)
+    dwt_write8bitoffsetreg(R.ANA_CFG_ID, 0, wake)
+
+
+def dwt_entersleep(idle_rc: int):
+    """
+    Put the device into sleep/deep sleep (dwt_configuresleep() first). With
+    idle_rc == DWT_DW_IDLE_RC the auto INIT2IDLE bit is cleared so the device
+    stays in IDLE_RC after waking, and the PLL is started by the next TX/RX.
+    """
+    if idle_rc == R.DWT_DW_IDLE_RC:
+        dwt_and8bitoffsetreg(R.SEQ_CTRL_ID, 0x1, (~(R.SEQ_CTRL_AINIT2IDLE_BIT_MASK >> 8)) & 0xFF)
+
+    # Copy the configuration to AON: this uploads it and puts the device to sleep.
+    dwt_write8bitoffsetreg(R.AON_CTRL_ID, 0, 0)
+    dwt_write8bitoffsetreg(R.AON_CTRL_ID, 0, R.AON_CTRL_ARRAY_SAVE_BIT_MASK)
+
+
+def dwt_entersleepaftertx(enable: int):
+    """
+    Make the device enter sleep/deep sleep automatically after it has sent a
+    frame (dwt_configuresleep() first). No SPI access is possible afterwards
+    until it is woken. The IRQ line must be low (no pending events) for the chip
+    to go to sleep.
+    """
+    if enable:
+        dwt_or16bitoffsetreg(R.SEQ_CTRL_ID, 0, R.SEQ_CTRL_ATX2SLP_BIT_MASK)
+    else:
+        dwt_and16bitoffsetreg(R.SEQ_CTRL_ID, 0, (~R.SEQ_CTRL_ATX2SLP_BIT_MASK) & 0xFFFF)

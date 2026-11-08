@@ -570,3 +570,19 @@ DWT_TIME_UNITS = 1.0 / 499.2e6 / 128.0     # device time unit in seconds (~15.65
 
 # --- ex_05 double-sided ranging (deca_regs.h) ---
 DTUNE1_ID = 0x60004
+
+# --- sleep / wake-up (deca_regs.h, deca_vals.h, deca_device_api.h) ---
+AON_CTRL_ID = 0xa0004
+AON_DIG_CFG_ID = 0xa0000
+ANA_CFG_ID = 0xa0014
+AON_CTRL_ARRAY_SAVE_BIT_MASK = 0x2
+DWT_CONFIG = 0x0001
+DWT_PRES_SLEEP = 0x20
+DWT_WAKE_WUP = 0x10
+DWT_WAKE_CSN = 0x8
+DWT_SLP_EN = 0x1
+BUF1_RX_FINFO = 0x1800e8
+
+# --- auto TX->sleep (ex_01c) ---
+SEQ_CTRL_ATX2SLP_BIT_MASK = 0x800
+SYS_ENABLE_LO_SPIRDY_ENABLE_BIT_MASK = 0x800000

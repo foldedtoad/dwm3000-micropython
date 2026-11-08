@@ -200,12 +200,20 @@ class Port:
             self._in_service = False
 
     def wakeup_pulse(self):
-        """Pulse WAKEUP to bring the DW3000 out of low-power sleep."""
-        if self.wakeup is None:
-            raise RuntimeError("WAKEUP pin not defined for board %r (see port.py)" % BOARD)
-        self.wakeup.value(1)
-        time.sleep_us(500)
-        self.wakeup.value(0)
+        """
+        Wake the DW3000 from sleep: pulse WAKEUP high for >= 500 us (as upstream).
+        On a board with no known WAKEUP pin (ArduPico), hold CS low for 500 us
+        instead; this wakes the chip only if the example enabled DWT_WAKE_CSN
+        (ex_01b does). No SPI clocks may occur during the pulse.
+        """
+        if self.wakeup is not None:
+            self.wakeup.value(1)
+            time.sleep_us(500)
+            self.wakeup.value(0)
+        else:
+            self.cs.value(0)
+            time.sleep_us(500)
+            self.cs.value(1)
 
 
 # Module-level singleton, mirroring the single-device global state pattern
