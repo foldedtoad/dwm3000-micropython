@@ -1361,3 +1361,50 @@ def dwt_entersleepaftertx(enable: int):
         dwt_or16bitoffsetreg(R.SEQ_CTRL_ID, 0, R.SEQ_CTRL_ATX2SLP_BIT_MASK)
     else:
         dwt_and16bitoffsetreg(R.SEQ_CTRL_ID, 0, (~R.SEQ_CTRL_ATX2SLP_BIT_MASK) & 0xFFFF)
+
+
+# ===========================================================================
+# AON memory access and timed sleep
+# ===========================================================================
+def dwt_aon_read(aon_address: int) -> int:
+    """Read one byte of AON (always-on) memory."""
+    dwt_write16bitoffsetreg(R.AON_ADDR_ID, 0x0, aon_address)
+    dwt_write8bitoffsetreg(R.AON_CTRL_ID, 0x0, R.AON_CTRL_DCA_ENAB_BIT_MASK | R.AON_CTRL_DCA_READ_EN_BIT_MASK)
+    dwt_write8bitoffsetreg(R.AON_CTRL_ID, 0x0, 0x0)      # clear all enabled bits
+    return dwt_read8bitoffsetreg(R.AON_RDATA_ID, 0x0)
+
+
+def dwt_aon_write(aon_address: int, aon_write_data: int):
+    """Write one byte of AON memory."""
+    temp = R.AON_CTRL_DCA_WRITE_HI_EN_BIT_MASK if aon_address >= 0x100 else 0
+    dwt_write16bitoffsetreg(R.AON_ADDR_ID, 0x0, aon_address)
+    dwt_write8bitoffsetreg(R.AON_WDATA_ID, 0x0, aon_write_data & 0xFF)
+    dwt_write8bitoffsetreg(R.AON_CTRL_ID, 0x0, temp | R.AON_CTRL_DCA_ENAB_BIT_MASK | R.AON_CTRL_DCA_WRITE_EN_BIT_MASK)
+    dwt_write8bitoffsetreg(R.AON_CTRL_ID, 0x0, 0x0)      # clear all enabled bits
+
+
+def dwt_configuresleepcnt(sleepcnt: int):
+    """
+    Set the sleep counter: the top 16 bits [27:12] of a 28-bit counter, so one
+    step is 4096 low-power-oscillator cycles. Call dwt_calibratesleepcnt() first
+    to know what a step means.
+    """
+    dwt_aon_write(R.AON_SLPCNT_LO, sleepcnt & 0xFF)
+    dwt_aon_write(R.AON_SLPCNT_HI, (sleepcnt >> 8) & 0xFF)
+
+
+def dwt_calibratesleepcnt() -> int:
+    """
+    Calibrate the low-power oscillator (15..34 kHz depending on temperature and
+    voltage). Returns the number of XTAL cycles per LP oscillator cycle; the LP
+    oscillator frequency is XTAL_FREQ_HZ divided by the return value.
+    """
+    dwt_or8bitoffsetreg(R.LDO_CTRL_ID, 0, R.LDO_CTRL_LDO_VDDPLL_EN_BIT_MASK)   # VDDPLL on: reference clock
+    dwt_aon_write(R.AON_SLPCNT_CAL_CTRL, 0x00)      # clear any previous calibration settings
+    dwt_aon_write(R.AON_SLPCNT_CAL_CTRL, 0x04)      # run calibration
+    time.sleep_ms(2)    # at least one LP OSC period at the slowest 15 kHz (~66 us)
+    temp = dwt_aon_read(R.AON_SLPCNT_CAL_LO)
+    temp |= dwt_aon_read(R.AON_SLPCNT_CAL_HI) << 8
+    dwt_aon_write(R.AON_SLPCNT_CAL_CTRL, 0x00)      # clear calibration
+    dwt_and8bitoffsetreg(R.LDO_CTRL_ID, 0, (~R.LDO_CTRL_LDO_VDDPLL_EN_BIT_MASK) & 0xFF)   # VDDPLL off
+    return temp

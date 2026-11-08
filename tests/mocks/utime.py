@@ -5,3 +5,6 @@ def ticks_us():
     _t[0]+=250   # deterministic fake clock: 250 us per call
     return _t[0]
 def ticks_diff(a,b): return a-b
+def ticks_ms():
+    _t[0]+=250   # shares the fake clock; value in ms is only used for differences
+    return _t[0]//1000
