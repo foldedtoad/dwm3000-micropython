@@ -108,3 +108,53 @@ class DwtDeviceEntCnts:
         self.HPW = 0     # half period warnings (8 bit)
         self.CRCE = 0    # SPI CRC errors (8 bit)
         self.PREJ = 0    # preamble rejections (12 bit)
+
+
+class DwtAesKey:
+    """Equivalent of dwt_aes_key_t: 128/192/256-bit key as eight 32-bit words."""
+
+    def __init__(self, key0=0, key1=0, key2=0, key3=0, key4=0, key5=0, key6=0, key7=0):
+        self.key0 = key0
+        self.key1 = key1
+        self.key2 = key2
+        self.key3 = key3
+        self.key4 = key4
+        self.key5 = key5
+        self.key6 = key6
+        self.key7 = key7
+
+
+class DwtAesConfig:
+    """Equivalent of dwt_aes_config_t."""
+
+    def __init__(self, aes_key_otp_type, aes_core_type, mic, key_src, key_load,
+                 key_addr, key_size, mode):
+        self.aes_key_otp_type = aes_key_otp_type   # key from RAM or OTP
+        self.aes_core_type = aes_core_type         # GCM or CCM*
+        self.mic = mic                             # message integrity code size (MIC_x enum)
+        self.key_src = key_src                     # key in registers (128 bit) or RAM/OTP
+        self.key_load = key_load                   # load key from RAM or use the registers
+        self.key_addr = key_addr                   # address offset of the key when in RAM
+        self.key_size = key_size                   # AES_KEY_128/192/256bit
+        self.mode = mode                           # encrypt / decrypt
+
+
+class DwtAesJob:
+    """
+    Equivalent of dwt_aes_job_t. Where the C struct holds pointers to the
+    header/payload buffers, this holds bytes/bytearray objects (or None):
+    on decryption dwt_do_aes() copies the plain header/payload INTO them, so
+    pass bytearrays of the right size there.
+    """
+
+    def __init__(self, nonce=None, header=None, payload=None, header_len=0, payload_len=0,
+                 src_port=0, dst_port=0, mode=0, mic_size=0):
+        self.nonce = nonce            # 12 bytes
+        self.header = header          # not encrypted/decrypted
+        self.payload = payload        # encrypted/decrypted
+        self.header_len = header_len
+        self.payload_len = payload_len
+        self.src_port = src_port
+        self.dst_port = dst_port
+        self.mode = mode
+        self.mic_size = mic_size      # tag size in bytes

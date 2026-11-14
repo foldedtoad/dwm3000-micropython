@@ -25,3 +25,10 @@ FINAL_MSG_TS_LEN = 4
 UUS_TO_DWT_TIME = 63898
 
 FRAME_LEN_MAX_EX = 1023         # extended frame length mode maximum
+
+# aes_results_e (shared_defines.h): result of rx_aes_802_15_8()
+AES_RES_OK = 0
+AES_RES_ERROR_LENGTH = -1
+AES_RES_ERROR = -2
+AES_RES_ERROR_FRAME = -3
+AES_RES_ERROR_IGNORE_FRAME = -4

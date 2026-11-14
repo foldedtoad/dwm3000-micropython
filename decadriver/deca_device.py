@@ -456,6 +456,12 @@ def dwt_pgf_cal(ldoen: int) -> int:
 # ===========================================================================
 # dwt_configure
 # ===========================================================================
+# STS_MNTH scales with STS length as sqrt(stsLength/16)*2048, indexed by the
+# dwt_sts_lengths_e value (32, 64, 128, 256, 512, 1024, 2048 symbols); upstream's
+# sts_length_factors[] table.
+_STS_LENGTH_FACTORS = (1024, 1448, 2048, 2896, 4096, 5793, 8192)
+
+
 def _get_sts_mnth(cipher: int, threshold: int, shift_val: int) -> int:
     value = cipher * threshold
     if shift_val == 3:
@@ -517,9 +523,9 @@ def dwt_configure(config) -> int:
     else:
         if config.stsMode != R.DWT_STS_MODE_OFF:
             if config.pdoaMode in (R.DWT_PDOA_M1, R.DWT_PDOA_M0):
-                sts_mnth = _get_sts_mnth(sts_len, R.CIA_MANUALLOWERBOUND_TH_64, 3)
+                sts_mnth = _get_sts_mnth(_STS_LENGTH_FACTORS[config.stsLength], R.CIA_MANUALLOWERBOUND_TH_64, 3)
             else:
-                sts_mnth = _get_sts_mnth(sts_len, R.CIA_MANUALLOWERBOUND_TH_64, 4)
+                sts_mnth = _get_sts_mnth(_STS_LENGTH_FACTORS[config.stsLength], R.CIA_MANUALLOWERBOUND_TH_64, 4)
             preamble_len += sts_len * 8
             dwt_modify16bitoffsetreg(R.STS_CONFIG_LO_ID, 2,
                                       (~(R.STS_CONFIG_LO_STS_MAN_TH_BIT_MASK >> 16)) & 0xFFFF,
@@ -1408,3 +1414,292 @@ def dwt_calibratesleepcnt() -> int:
     dwt_aon_write(R.AON_SLPCNT_CAL_CTRL, 0x00)      # clear calibration
     dwt_and8bitoffsetreg(R.LDO_CTRL_ID, 0, (~R.LDO_CTRL_LDO_VDDPLL_EN_BIT_MASK) & 0xFF)   # VDDPLL off
     return temp
+
+
+# ===========================================================================
+# STS quality and status
+# ===========================================================================
+def dwt_readstsquality():
+    """
+    Read the STS signal quality index. Returns (result, index): result is >= 0
+    when the quality is good and < 0 when it is bad (index minus the threshold
+    set by dwt_configure, 90% of the number of STS symbols for 64 MHz PRF).
+    Upstream returns the index through a pointer; here it is the second tuple item.
+    """
+    preamble_count = dwt_read16bitoffsetreg(R.STS_STS_ID, 0) & R.STS_STS_ACC_QUAL_BIT_MASK
+    if preamble_count & R.STS_ACC_CP_QUAL_SIGNTST:
+        preamble_count |= R.STS_ACC_CP_QUAL_SIGNEXT
+    index = preamble_count - 0x10000 if preamble_count & 0x8000 else preamble_count   # to int16
+    return index - local.ststhreshold, index
+
+
+def dwt_readstsstatus(sts_num: int = 0):
+    """
+    Read the STS status (9 status bits). Returns (result, status): result is
+    DWT_SUCCESS when no status bit is set and DWT_ERROR otherwise. sts_num is 0 for
+    the first STS, 1 for the second (valid only in PDOA mode 3). Double-buffered
+    RX mode is not ported.
+    """
+    if local.dblbuffon != R.DBL_BUFF_OFF:
+        raise NotImplementedError("dwt_readstsstatus: double-buffered RX is not ported")
+    reg = R.STS1_TOA_HI_ID if sts_num == 1 else R.STS_TOA_HI_ID
+    status = dwt_read16bitoffsetreg(reg, 2) >> 7
+    return (R.DWT_ERROR if status != 0 else R.DWT_SUCCESS), status
+
+
+# ===========================================================================
+# AES block
+# ===========================================================================
+def dwt_configure_aes(cfg):
+    """Configure the AES block before first use (DwtAesConfig)."""
+    tmp = cfg.mode
+    tmp |= cfg.key_size << R.AES_CFG_KEY_SIZE_BIT_OFFSET
+    tmp |= cfg.key_addr << R.AES_CFG_KEY_ADDR_BIT_OFFSET
+    tmp |= cfg.key_load << R.AES_CFG_KEY_LOAD_BIT_OFFSET
+    tmp |= cfg.key_src << R.AES_CFG_KEY_SRC_BIT_OFFSET
+    tmp |= cfg.mic << R.AES_CFG_TAG_SIZE_BIT_OFFSET
+    tmp |= cfg.aes_core_type << R.AES_CFG_CORE_SEL_BIT_OFFSET
+    tmp |= cfg.aes_key_otp_type << R.AES_CFG_KEY_OTP_BIT_OFFSET
+    dwt_write16bitoffsetreg(R.AES_CFG_ID, 0, tmp & 0xFFFF)
+
+
+def dwt_mic_size_from_bytes(mic_size_in_bytes: int) -> int:
+    """MIC size in bytes (0, 4, 6, 8, ..., 16) to the value written in AES_CFG."""
+    if mic_size_in_bytes != 0:
+        return (mic_size_in_bytes >> 1) - 1
+    return R.MIC_0
+
+
+def dwt_set_keyreg_128(key):
+    """Program a 128-bit key (DwtAesKey, words key0..key3) into the key registers."""
+    dwt_write32bitreg(R.AES_KEY0_ID, key.key0 & 0xFFFFFFFF)
+    dwt_write32bitreg(R.AES_KEY1_ID, key.key1 & 0xFFFFFFFF)
+    dwt_write32bitreg(R.AES_KEY2_ID, key.key2 & 0xFFFFFFFF)
+    dwt_write32bitreg(R.AES_KEY3_ID, key.key3 & 0xFFFFFFFF)
+
+
+_AES_POLL_TIMEOUT_MS = 200
+
+
+def _dwt_wait_aes_poll() -> int:
+    """
+    Wait for the AES job to finish; clears the status bits and returns the
+    low 6 bits of AES_STS. Upstream waits forever; here a 200 ms limit stops a
+    hang (an unresponsive AES block), reported as a transfer-error status.
+    """
+    t0 = time.ticks_ms()
+    while True:
+        tmp = dwt_read8bitoffsetreg(R.AES_STS_ID, 0)
+        if tmp & (R.AES_STS_AES_DONE_BIT_MASK | R.AES_STS_TRANS_ERR_BIT_MASK):
+            break
+        if time.ticks_diff(time.ticks_ms(), t0) > _AES_POLL_TIMEOUT_MS:
+            return R.AES_STS_TRANS_ERR_BIT_MASK
+    dwt_write8bitoffsetreg(R.AES_STS_ID, 0, tmp)   # clear all bits set by the AES operation
+    return tmp & 0x3F
+
+
+def _dwt_update_nonce_ccm(nonce, payload_len: int):
+    """
+    CCM* wants the 13-byte nonce scrambled into the four IV registers:
+    IV0 = nonce[10..7], IV1 = nonce[6..3], IV2 = nonce[2..0] + don't care,
+    IV3 = payload length (LE 16 bit), nonce[12], nonce[11].
+    """
+    iv = bytes([nonce[10], nonce[9], nonce[8], nonce[7],
+                nonce[6], nonce[5], nonce[4], nonce[3],
+                nonce[2], nonce[1], nonce[0], 0x00,
+                payload_len & 0xFF, (payload_len >> 8) & 0xFF, nonce[12], nonce[11]])
+    dwt_writetodevice(R.AES_IV0_ID, 0, 16, iv)
+
+
+def _dwt_update_nonce_gcm(nonce):
+    """GCM takes the 12-byte nonce as is, LSB first."""
+    dwt_writetodevice(R.AES_IV0_ID, 0, 12, bytes(nonce[:12]))
+
+
+def dwt_do_aes(job, core_type: int) -> int:
+    """
+    Encrypt or decrypt a data block (DwtAesJob). The 128-bit key must be loaded
+    (dwt_set_keyreg_128) and the block configured (dwt_configure_aes); only
+    AES_KEY_Src_Register mode and packets under 127 bytes are supported, and the
+    nonce must be unique per transaction.
+
+    Returns the AES_STS status bits (>= 0), or a negative ERROR_* code. On a
+    successful decryption the plain header and payload are copied into
+    job.header / job.payload (bytearrays, if given).
+    """
+    if job.mic_size == R.MIC_ERROR:
+        return R.ERROR_WRONG_MIC_SIZE
+
+    # program the initialization vector
+    if core_type == R.AES_core_type_GCM:
+        _dwt_update_nonce_gcm(job.nonce)
+    else:
+        _dwt_update_nonce_ccm(job.nonce, job.payload_len)
+
+    total = job.header_len + job.payload_len
+    dest_reg = R.TX_BUFFER_ID
+    if job.mode == R.AES_Encrypt:
+        if job.src_port == R.AES_Src_Scratch:
+            allow_size = R.SCRATCH_BUFFER_MAX_LEN
+            dest_reg = R.SCRATCH_RAM_ID
+        else:
+            allow_size = R.TX_BUFFER_MAX_LEN
+            dest_reg = R.TX_BUFFER_ID
+    elif job.mode == R.AES_Decrypt:
+        allow_size = R.SCRATCH_BUFFER_MAX_LEN if job.dst_port == R.AES_Dst_Scratch else R.RX_BUFFER_MAX_LEN
+    else:
+        return R.ERROR_WRONG_MODE
+
+    if total > allow_size - job.mic_size - R.FCS_LEN:
+        return R.ERROR_DATA_SIZE
+
+    if job.mode == R.AES_Encrypt:
+        dwt_writetodevice(dest_reg, 0, job.header_len, bytes(job.header))                      # plain header
+        dwt_writetodevice(dest_reg, job.header_len, job.payload_len, bytes(job.payload))       # data to encrypt
+
+    # source and destination ports; "current RX buffer" follows double-buffer state
+    src_port = job.src_port
+    if src_port in (R.AES_Src_Rx_buf_0, R.AES_Src_Rx_buf_1):
+        src_port = R.AES_Src_Rx_buf_1 if local.dblbuffon == R.DBL_BUFF_ACCESS_BUFFER_1 else R.AES_Src_Rx_buf_0
+
+    dst_port = job.dst_port
+    if dst_port in (R.AES_Dst_Rx_buf_0, R.AES_Dst_Rx_buf_1):
+        dst_port = R.AES_Dst_Rx_buf_1 if local.dblbuffon == R.DBL_BUFF_ACCESS_BUFFER_1 else R.AES_Dst_Rx_buf_0
+    elif dst_port == R.AES_Dst_STS_key:
+        if job.payload_len > R.STS_LEN_128BIT:     # at most 16 bytes into the STS registers
+            return R.ERROR_PAYLOAD_SIZE
+
+    dwt_write32bitreg(R.DMA_CFG0_ID, (src_port << R.DMA_CFG0_SRC_PORT_BIT_OFFSET) |
+                      (dst_port << R.DMA_CFG0_DST_PORT_BIT_OFFSET))
+
+    # header and payload lengths: the only things known about the frame. The
+    # payload length excludes the MIC and the FCS.
+    dwt_write32bitreg(R.DMA_CFG1_ID,
+                      (R.DMA_CFG1_HDR_SIZE_BIT_MASK & (job.header_len << R.DMA_CFG1_HDR_SIZE_BIT_OFFSET)) |
+                      (R.DMA_CFG1_PYLD_SIZE_BIT_MASK & (job.payload_len << R.DMA_CFG1_PYLD_SIZE_BIT_OFFSET)))
+
+    # start the AES action
+    dwt_write8bitoffsetreg(R.AES_START_ID, 0, R.AES_START_AES_START_BIT_MASK)
+    ret = _dwt_wait_aes_poll()
+
+    # After a good decryption, hand back the plain header and payload.
+    if (ret & ~(R.AES_STS_RAM_EMPTY_BIT_MASK | R.AES_STS_RAM_FULL_BIT_MASK)) == R.AES_STS_AES_DONE_BIT_MASK \
+            and job.mode == R.AES_Decrypt:
+        if job.dst_port in (R.AES_Dst_Rx_buf_0, R.AES_Dst_Rx_buf_1):
+            read_addr = R.RX_BUFFER_1_ID if local.dblbuffon == R.DBL_BUFF_ACCESS_BUFFER_1 else R.RX_BUFFER_0_ID
+        elif job.dst_port == R.AES_Dst_Tx_buf:
+            read_addr = R.TX_BUFFER_ID
+        else:
+            read_addr = R.SCRATCH_RAM_ID
+
+        if job.header is not None and job.header_len:
+            job.header[:job.header_len] = dwt_readfromdevice(read_addr, 0, job.header_len)
+        if job.payload is not None and job.payload_len:
+            job.payload[:job.payload_len] = dwt_readfromdevice(read_addr, job.header_len, job.payload_len)
+
+    return ret
+
+
+# ===========================================================================
+# Continuous wave / continuous frame (test modes, ex_04a / ex_04b)
+# ===========================================================================
+_SEL_CHANNEL5 = 5
+_SEL_CHANNEL9 = 9
+_FORCE_CLK_SYS_TX = 1
+
+
+def dwt_setfinegraintxseq(enable: int):
+    dwt_write32bitoffsetreg(R.PWR_UP_TIMES_LO_ID, 2,
+                            R.PMSC_TXFINESEQ_ENABLE if enable else R.PMSC_TXFINESEQ_DISABLE)
+
+
+def dwt_enable_rf_tx(channel: int, switch_control: int):
+    """Turn on the TX LDOs and RF blocks and (optionally) switch the antenna to TX."""
+    dwt_or32bitoffsetreg(R.LDO_CTRL_ID, 0, R.LDO_CTRL_LDO_VDDHVTX_VREF_BIT_MASK |
+                         R.LDO_CTRL_LDO_VDDHVTX_EN_BIT_MASK)
+    dwt_or32bitoffsetreg(R.LDO_CTRL_ID, 0, R.LDO_CTRL_LDO_VDDTX2_VREF_BIT_MASK |
+                         R.LDO_CTRL_LDO_VDDTX1_VREF_BIT_MASK |
+                         R.LDO_CTRL_LDO_VDDTX2_EN_BIT_MASK |
+                         R.LDO_CTRL_LDO_VDDTX1_EN_BIT_MASK)
+    en = (R.RF_ENABLE_TX_SW_EN_BIT_MASK | R.RF_ENABLE_TX_EN_BIT_MASK |
+          R.RF_ENABLE_TX_EN_BUF_BIT_MASK | R.RF_ENABLE_TX_BIAS_EN_BIT_MASK)
+    if channel == _SEL_CHANNEL5:
+        en |= R.RF_ENABLE_TX_CH5_BIT_MASK
+    dwt_or32bitoffsetreg(R.RF_ENABLE_ID, 0, en)
+    if switch_control:
+        dwt_write32bitoffsetreg(R.RF_SWITCH_CTRL_ID, 0, R.TXRXSWITCH_TX)
+
+
+def dwt_disable_rf_tx(switch_config: int):
+    dwt_write32bitoffsetreg(R.LDO_CTRL_ID, 0, 0)
+    dwt_write32bitoffsetreg(R.RF_ENABLE_ID, 0, 0)
+    if switch_config:
+        dwt_write32bitoffsetreg(R.RF_SWITCH_CTRL_ID, 0, R.TXRXSWITCH_AUTO)
+
+
+def dwt_enable_rftx_blocks(channel: int):
+    """Manually (rather than by the TX sequencer) enable the TX blocks."""
+    if channel == _SEL_CHANNEL5:
+        dwt_or32bitoffsetreg(R.RF_CTRL_MASK_ID, 0, R.RF_ENABLE_TX_SW_EN_BIT_MASK |
+                             R.RF_ENABLE_TX_CH5_BIT_MASK | R.RF_ENABLE_TX_EN_BIT_MASK |
+                             R.RF_ENABLE_TX_EN_BUF_BIT_MASK | R.RF_ENABLE_TX_BIAS_EN_BIT_MASK)
+    elif channel == _SEL_CHANNEL9:
+        dwt_or32bitoffsetreg(R.RF_CTRL_MASK_ID, 0, R.RF_ENABLE_TX_SW_EN_BIT_MASK |
+                             R.RF_ENABLE_TX_EN_BIT_MASK | R.RF_ENABLE_TX_EN_BUF_BIT_MASK |
+                             R.RF_ENABLE_TX_BIAS_EN_BIT_MASK)
+
+
+def dwt_disable_rftx_blocks():
+    dwt_write32bitoffsetreg(R.RF_CTRL_MASK_ID, 0, 0)
+
+
+def dwt_repeated_cw(cw_enable: int, cw_mode_config: int):
+    dwt_setfinegraintxseq(0)
+    if cw_mode_config > 0xF:
+        cw_mode_config = 0xF
+    if cw_enable > 3 or cw_enable < 1:
+        cw_enable = 4
+    dwt_write32bitoffsetreg(R.TX_TEST_ID, 0, 0x10 >> cw_enable)
+    dwt_write32bitoffsetreg(R.PG_TEST_ID, 0, cw_mode_config << ((cw_enable - 1) * 4))
+
+
+def dwt_repeated_frames(framerepetitionrate: int):
+    dwt_or8bitoffsetreg(R.TEST_CTRL0_ID, 0, R.TEST_CTRL0_TX_PSTM_BIT_MASK)
+    if framerepetitionrate < 4:
+        framerepetitionrate = 4
+    dwt_write32bitreg(R.DX_TIME_ID, framerepetitionrate)
+
+
+def dwt_configcwmode(channel: int):
+    """Transmit an unmodulated carrier at the channel centre frequency."""
+    dwt_enable_rf_tx(channel, 1)
+    dwt_enable_rftx_blocks(channel)
+    dwt_force_clocks(_FORCE_CLK_SYS_TX)
+    dwt_repeated_cw(1, 0xF)
+
+
+def dwt_configcontinuousframemode(framerepetitionrate: int, channel: int):
+    """Repeat transmitted frames continuously (call dwt_configure/configuretxrf first)."""
+    dwt_enable_rf_tx(channel, 1)
+    dwt_enable_rftx_blocks(channel)
+    dwt_force_clocks(_FORCE_CLK_SYS_TX)
+    dwt_repeated_frames(framerepetitionrate)
+
+
+def dwt_clearaonconfig():
+    dwt_write16bitoffsetreg(R.AON_DIG_CFG_ID, 0, 0x00)
+    dwt_write8bitoffsetreg(R.ANA_CFG_ID, 0, 0x00)
+    dwt_write8bitoffsetreg(R.AON_CTRL_ID, 0, 0)
+    dwt_write8bitoffsetreg(R.AON_CTRL_ID, 0, R.AON_CTRL_ARRAY_SAVE_BIT_MASK)
+
+
+def dwt_softreset():
+    """Soft reset. Leaves the chip on the slow clock: SPI must be at a low rate
+    afterwards, and dwt_initialise()/dwt_configure() must be run again."""
+    dwt_clearaonconfig()
+    time.sleep_ms(1)
+    dwt_or8bitoffsetreg(R.CLK_CTRL_ID, 0, 3)  # FORCE_SYSCLK_FOSC
+    dwt_write8bitoffsetreg(R.SOFT_RST_ID, 0, R.DWT_RESET_ALL)
+    time.sleep_ms(1)
+    local.dblbuffon = R.DBL_BUFF_OFF
+    local.sleep_mode = 0
