@@ -1703,3 +1703,60 @@ def dwt_softreset():
     time.sleep_ms(1)
     local.dblbuffon = R.DBL_BUFF_OFF
     local.sleep_mode = 0
+
+
+# ===========================================================================
+# Frame filtering, auto-ACK, double RX buffer (ex_07a/b/c)
+# ===========================================================================
+def dwt_setpanid(panID: int):
+    dwt_write16bitoffsetreg(R.PANADR_ID, R.PANADR_PAN_ID_BYTE_OFFSET, panID)
+
+
+def dwt_setaddress16(shortAddress: int):
+    dwt_write16bitoffsetreg(R.PANADR_ID, R.PANADR_SHORTADDR_BIT_OFFSET, shortAddress)
+
+
+def dwt_configureframefilter(enabletype: int, filtermode: int):
+    if enabletype == R.DWT_FF_ENABLE_802_15_4:
+        dwt_or8bitoffsetreg(R.SYS_CFG_ID, 0, R.SYS_CFG_FFEN_BIT_MASK)
+        dwt_write16bitoffsetreg(R.ADR_FILT_CFG_ID, 0, filtermode)
+    else:
+        dwt_and8bitoffsetreg(R.SYS_CFG_ID, 0, (~R.SYS_CFG_FFEN_BIT_MASK) & 0xFF)
+        dwt_write16bitoffsetreg(R.ADR_FILT_CFG_ID, 0, 0)
+
+
+def dwt_enableautoack(responseDelayTime: int, enable: int):
+    """Auto-ACK (needs frame filtering). Delay is in symbols, max 255; 0 = as soon as possible."""
+    dwt_write8bitoffsetreg(R.ACK_RESP_ID, 3, responseDelayTime)
+    if enable:
+        dwt_or32bitoffsetreg(R.SYS_CFG_ID, 0, R.SYS_CFG_AUTO_ACK_BIT_MASK | R.SYS_CFG_FAST_AAT_EN_BIT_MASK)
+    else:
+        dwt_and16bitoffsetreg(R.SYS_CFG_ID, 0, (~R.SYS_CFG_AUTO_ACK_BIT_MASK) & 0xFFFF)
+
+
+def dwt_setdblrxbuffmode(dbl_buff_state: int, dbl_buff_mode: int):
+    or_val = 0
+    and_val = 0xFFFFFFFF
+    if dbl_buff_state == R.DBL_BUF_STATE_EN:
+        and_val = (~R.SYS_CFG_DIS_DRXB_BIT_MASK) & 0xFFFFFFFF
+        local.dblbuffon = R.DBL_BUFF_ACCESS_BUFFER_0   # host accesses RX_BUFFER_0 first
+        # Point indirect register B at BUF1_RX_FINFO (saves time later; redo after sleep).
+        dwt_write32bitreg(R.INDIRECT_ADDR_B_ID, R.BUF1_RX_FINFO >> 16)
+        dwt_write32bitreg(R.ADDR_OFFSET_B_ID, R.BUF1_RX_FINFO & 0xFFFF)
+    else:
+        or_val = R.SYS_CFG_DIS_DRXB_BIT_MASK
+        local.dblbuffon = R.DBL_BUFF_OFF
+    if dbl_buff_mode == R.DBL_BUF_MODE_AUTO:
+        or_val |= R.SYS_CFG_RXAUTR_BIT_MASK
+    else:
+        and_val &= (~R.SYS_CFG_RXAUTR_BIT_MASK) & 0xFFFFFFFF
+    dwt_modify32bitoffsetreg(R.SYS_CFG_ID, 0, and_val, or_val)
+
+
+def dwt_signal_rx_buff_free():
+    """Tell the chip the current RX buffer is free; host access moves to the other buffer."""
+    dwt_writefastCMD(R.CMD_DB_TOGGLE)
+    if local.dblbuffon == R.DBL_BUFF_ACCESS_BUFFER_1:
+        local.dblbuffon = R.DBL_BUFF_ACCESS_BUFFER_0
+    else:
+        local.dblbuffon = R.DBL_BUFF_ACCESS_BUFFER_1
